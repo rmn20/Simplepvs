@@ -72,7 +72,7 @@ bool raycastCube(PVSRayHit* hitRes, const PVSRay* ray, const float* min, const f
 		return true;
 	}
 
-	float invDir[3] = {1.0f / ray->dir[0], 1.0f / ray->dir[1], 1.0f / ray->dir[2]};
+	double invDir[3] = {1.0f / ray->dir[0], 1.0f / ray->dir[1], 1.0f / ray->dir[2]};
 
 	float t[6];
     t[0] = (min[0] - ray->start[0]) * invDir[0];
@@ -203,10 +203,9 @@ inline float _raycastFace(
 	float dot = -(dir[0] * norm[0] + dir[1] * norm[1] + dir[2] * norm[2]);
 	float dot2 = (start[0] - verts[0]) * norm[0] + (start[1] - verts[1]) * norm[1] + (start[2] - verts[2]) * norm[2];
 	
-	float distance = dot2 == 0 ? 0 : dot2 / dot;
+	if(fabsf(dot) < 0.000001f && fabsf(dot2) > 0.000001f) return FLT_MAX; //ray is parallel to plane and isnt inside polygon
 	
-	if(dot == 0 && dot2 != 0) return FLT_MAX; // ray is parallel to plane and isnt inside polygon
-	
+	float distance = dot == 0 ? 0 : dot2 / dot;
 	bool backface = dot < 0;
 	//if(distance == 0 && backface) return FLT_MAX;
 	if(distance < 0 || distance > maxDist) return FLT_MAX;
