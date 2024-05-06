@@ -39,7 +39,6 @@ bool pvsLoadObj(PVSModel* mdl, char* inputPath);
 
 //Calculate face normal
 void calcNorm(float* normal, float* face) {
-	
 	float ax = face[0], ay = face[1], az = face[2];
 	float bx = face[3], by = face[4], bz = face[5];
 	float cx = face[6], cy = face[7], cz = face[8];
@@ -49,10 +48,17 @@ void calcNorm(float* normal, float* face) {
 	float z = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
 
 	double len = sqrt(x * x + y * y + z * z);
-
-	normal[0] = (float) (x / len);
-	normal[1] = (float) (y / len);
-	normal[2] = (float) (z / len);
+	
+	if(len == 0) {
+		//found a degenerate..
+		normal[0] = 0;
+		normal[1] = 1;
+		normal[2] = 0;
+	} else {
+		normal[0] = (float) (x / len);
+		normal[1] = (float) (y / len);
+		normal[2] = (float) (z / len);
+	}
 }
 
 //Load vertex data
@@ -136,8 +142,8 @@ double inline pow2d(double a) {
 cvector_vector_type(float) _objAddMesh(PVSModel* mdl, PVSMesh* meshData, cvector_vector_type(float) meshVerts) {
 	
 	//Calculate AABB
-	float mins[3] = {FLT_MAX};
-	float maxs[3] = {-FLT_MAX};
+	float mins[3] = {FLT_MAX, FLT_MAX, FLT_MAX};
+	float maxs[3] = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
 	
 	for(int i=0; i<cvector_size(meshVerts); i+=3) {
 		
@@ -156,7 +162,6 @@ cvector_vector_type(float) _objAddMesh(PVSModel* mdl, PVSMesh* meshData, cvector
 	assert(meshData->vertsNorms);
 	
 	meshData->facesArea = 0;
-	double tmp = 0;
 	
 	for(size_t i=0; i<cvector_size(meshVerts) / 9; i++) {
 		
@@ -175,21 +180,9 @@ cvector_vector_type(float) _objAddMesh(PVSModel* mdl, PVSMesh* meshData, cvector
 			
 			meshData->facesArea += faceArea;
 		}
-		
-		{
-			double distAB = sqrt(pow2d(verts[0] - verts[3]) + pow2d(verts[1] - verts[3 + 1]) + pow2d(verts[2] - verts[3 + 2]));
-			double distBC = sqrt(pow2d(verts[3] - verts[6]) + pow2d(verts[3 + 1] - verts[6 + 1]) + pow2d(verts[3 + 2] - verts[6 + 2]));
-			double distAC = sqrt(pow2d(verts[0] - verts[6]) + pow2d(verts[1] - verts[6 + 1]) + pow2d(verts[2] - verts[6 + 2]));
-			
-			double S = (distAB + distBC + distAC) / 2;
-			double faceArea = sqrtf(S * (S-distAB) * (S-distBC) * (S-distAC) / 2);
-			
-			tmp += faceArea;
-		}
 	}
-	cvector_clear(meshVerts);
 	
-	printf("%f %lf\n", meshData->facesArea, tmp);
+	cvector_clear(meshVerts);
 	
 	//Add mesh to model and update mesh data
 	cvector_push_back(mdl->meshes, *meshData);
