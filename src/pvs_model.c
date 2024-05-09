@@ -238,8 +238,8 @@ bool pvsLoadObj(PVSModel* mdl, char* inputPath) {
 	fclose(f);
 	
 	//AABB
-	float mins[3] = {FLT_MAX};
-	float maxs[3] = {-FLT_MAX};
+	float mins[3] = {FLT_MAX, FLT_MAX, FLT_MAX};
+	float maxs[3] = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
 	
 	for(size_t i=0; i<cvector_size(mdl->meshes); i++) {
 		
