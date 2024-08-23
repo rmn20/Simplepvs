@@ -33,6 +33,17 @@ int main(void) {
 	/*int size;
 	char* data = LoadFileData("out.lrb", &size);*/
 	
+	Model cube = LoadModelFromMesh(GenMeshCube(1, 1, 1));
+	
+	#define GLSL_VERSION 330
+	
+	Shader shader = LoadShader(TextFormat("shaders/shader-glsl%i.vs", GLSL_VERSION),
+                               TextFormat("shaders/shader-glsl%i.fs", GLSL_VERSION));
+	shader.locs[SHADER_LOC_VECTOR_VIEW] = GetShaderLocation(shader, "viewPos");
+	
+	mdl.materials[0].shader = shader;
+	cube.materials[0].shader = shader;
+	
 	Vector3 camPos = (Vector3) {0};
 	Vector3 pvsCamPos = (Vector3) {0};
 	float rotX = 4.100000, rotY = 58.299999;
@@ -161,6 +172,9 @@ int main(void) {
 				rayCast(&rayHit, pvsMdl.meshes + i, &ray, -1);
 			}
 			
+			if(rayHit.hit) printf("hit! ");
+			else printf("miss! ");
+			
 			printf("%f %f %f %f\n", ray.start[0], ray.start[1], ray.start[2], rayHit.hitDistance);
 		}
 		
@@ -172,14 +186,18 @@ int main(void) {
 		if(IsKeyPressed(KEY_X)) {
 			clock_t start = clock();
 			totalRays += pvsCompute(&pvsDB, pvsMdl, 32, 8, dpos, dhit);
+			//totalRays += pvsCompute(&pvsDB, pvsMdl, 6.54f, 8, dpos, dhit);
+			//totalRays += pvsCompute(&pvsDB, pvsMdl, 48, 99999, dpos, dhit);
+			//totalRays += pvsCompute(&pvsDB, pvsMdl, 48, 8, dpos, dhit);
+			//totalRays += pvsCompute(&pvsDB, pvsMdl, 48/5.78, 99999, dpos, dhit);
 			raysComputeTime += (double) (clock() - start) / CLOCKS_PER_SEC;
 		}
 		
-		if(IsKeyPressed(KEY_RIGHT) && !IsKeyDown(KEY_LEFT_SHIFT)) cellsAverageSize += cellsAverageSize>=5?1:1;
-		if(IsKeyPressed(KEY_LEFT) && !IsKeyDown(KEY_LEFT_SHIFT) && cellsAverageSize > 1) cellsAverageSize -= cellsAverageSize>5?1:1;
+		if((IsKeyPressed(KEY_RIGHT) || IsKeyPressedRepeat(KEY_RIGHT)) && !IsKeyDown(KEY_LEFT_SHIFT)) cellsAverageSize += cellsAverageSize>=5?1:1;
+		if((IsKeyPressed(KEY_LEFT) || IsKeyPressedRepeat(KEY_LEFT)) && !IsKeyDown(KEY_LEFT_SHIFT) && cellsAverageSize > 1) cellsAverageSize -= cellsAverageSize>5?1:1;
 		
-		if(IsKeyPressed(KEY_RIGHT) && IsKeyDown(KEY_LEFT_SHIFT)) cellsDebug += (cellsDebug == mdl.meshCount-1) ? 0 : 1;
-		if(IsKeyPressed(KEY_LEFT) && IsKeyDown(KEY_LEFT_SHIFT)) cellsDebug -= (cellsDebug == -1) ? 0 : 1;
+		if((IsKeyPressed(KEY_RIGHT) || IsKeyPressedRepeat(KEY_RIGHT)) && IsKeyDown(KEY_LEFT_SHIFT)) cellsDebug += (cellsDebug == mdl.meshCount-1) ? 0 : 1;
+		if((IsKeyPressed(KEY_LEFT) || IsKeyPressedRepeat(KEY_LEFT)) && IsKeyDown(KEY_LEFT_SHIFT)) cellsDebug -= (cellsDebug == -1) ? 0 : 1;
 		
 		if(IsKeyPressed(KEY_C)) useCellData = !useCellData;
 		
@@ -227,6 +245,8 @@ int main(void) {
 		}
 		
 		//Draw
+		SetShaderValue(shader, shader.locs[SHADER_LOC_VECTOR_VIEW], &camPos, SHADER_UNIFORM_VEC3);
+		
 		if(!lockPVS) pvsCamPos = camPos;
 		pvsRes = pvsGetGridVisibility(&pvsDB, pvsCamPos.x, pvsCamPos.y, pvsCamPos.z);
 		
@@ -251,9 +271,12 @@ int main(void) {
 		BeginMode3D(cam);
 		
 		//Camera
-		DrawCube(
-			pvsCamPos,
-			0.5, 0.5, 0.5,
+		DrawModelEx(
+			cube, 
+			(Vector3) pvsCamPos, 
+			(Vector3) {0, 1, 0}, 
+			0,
+			(Vector3) {0.5, 0.5, 0.5}, 
 			(Color) {255, 255, 0, 255}
 		);
 		
@@ -302,36 +325,61 @@ int main(void) {
 			avgCellSize /= cvector_size(joinedCells);
 		}
 		
+		rlSetLineWidth(5);
 		if(!hideWorld) for(int i=0; i<mdl.meshCount; i++) {
 			
 			bool visible = !usePVS || (pvsRes.visMeshesCount > 0 && (pvsRes.visible[i / 8] & (1 << (i % 8))) != 0);
 			int matId = 0;//
 			matId = mdl.meshMaterial[i];
 			
-			
 			rlSetCullFace(RL_CULL_FACE_FRONT);
-			Color col = visible?((Color){64,64,64,255}):((Color){64,0,0,255});
-			if(cellsDebug == i) col = (Color){0,64,0,255};
+			Color colBack = visible?((Color){64,64,64,255}):((Color){64,0,0,255});
+			if(cellsDebug == i) colBack = (Color){0,64,0,255};
 			
-			mdl.materials[matId].maps[MATERIAL_MAP_ALBEDO].color = col;//visible?RED:((Color){64,0,0,255});
+			mdl.materials[matId].maps[MATERIAL_MAP_ALBEDO].color = colBack;//visible?RED:((Color){64,0,0,255});
 			DrawMesh(mdl.meshes[i], mdl.materials[matId], mdl.transform);
 			
 			rlSetCullFace(RL_CULL_FACE_BACK);
-			col = visible?WHITE:RED;
+			Color col = visible?WHITE:RED;
 			if(cellsDebug == i) col = (Color){0,255,0,255};
 			
 			mdl.materials[matId].maps[MATERIAL_MAP_ALBEDO].color = col;
 			DrawMesh(mdl.meshes[i], mdl.materials[matId], mdl.transform);
+			
+			Matrix transTmp = (Matrix) {
+				1.05f, 0, 0, -camPos.x * 0.05f,
+				0, 1.05f, 0, -camPos.y * 0.05f,
+				0, 0, 1.05f, -camPos.z * 0.05f,
+				0, 0, 0, 1
+			};
+			
+			rlEnableWireMode();
+			mdl.materials[matId].maps[MATERIAL_MAP_ALBEDO].color = colBack;
+			DrawMesh(mdl.meshes[i], mdl.materials[matId], MatrixMultiply(mdl.transform, transTmp));
+			rlDisableWireMode();
+			
+			if(IsKeyDown(KEY_LEFT_CONTROL)) {
+				float* min = pvsMdl.meshes[i].min;
+				float* max = pvsMdl.meshes[i].max;
+				
+				DrawCubeWiresV((Vector3) {(min[0] + max[0]) * 0.5f, (min[1] + max[1]) * 0.5f, (min[2] + max[2]) * 0.5f}, (Vector3) {max[0] - min[0], max[1] - min[1], max[2] - min[2]}, RED);
+			}
 		}
+		
+		rlSetLineWidth(1);
 		
 		DrawLine3D(
 			(Vector3) {dpos[0], dpos[1], dpos[2]},
 			(Vector3) {dhit[0], dhit[1], dhit[2]},
 			BLUE
 		);
-		DrawCube(
+		
+		DrawModelEx(
+			cube, 
 			(Vector3) {dpos[0], dpos[1], dpos[2]},
-			0.5, 0.5, 0.5,
+			(Vector3) {0, 1, 0}, 
+			0,
+			(Vector3) {0.5, 0.5, 0.5}, 
 			(Color) {255, 255, 0, 255}
 		);
 	
@@ -348,13 +396,16 @@ int main(void) {
 				col
 			);
 			
-			DrawCube(
+			DrawModelEx(
+				cube, 
 				(Vector3) {
 					ray.start[0] + ray.dir[0] * rayHit.hitDistance, 
 					ray.start[1] + ray.dir[1] * rayHit.hitDistance, 
 					ray.start[2] + ray.dir[2] * rayHit.hitDistance
 				},
-				0.1, 0.1, 0.1,
+				(Vector3) {0, 1, 0}, 
+				0,
+				(Vector3) {0.1, 0.1, 0.1}, 
 				col
 			);
 		}
@@ -387,9 +438,12 @@ int main(void) {
 			);
 				
 			if(cellsDebug != -1 && ((joinedCells[i].visMesh[cellsDebug/8] >> (cellsDebug&7)) & 1) == 0) {
-				DrawCube(
+				DrawModelEx(
+					cube, 
 					Vector3Scale(Vector3Add(min, max), 0.5),
-					max.x - min.x - 0.5, max.y - min.y - 0.5, max.z - min.z - 0.5,
+					(Vector3) {0, 1, 0}, 
+					0,
+					(Vector3) {max.x - min.x - 0.5, max.y - min.y - 0.5, max.z - min.z - 0.5}, 
 					RED
 				);
 			}
@@ -398,7 +452,7 @@ int main(void) {
 		rlEnableDepthMask();*/
 		
 		/*for(size_t i=0; i<cvector_size(tracedRays); i+=3) {
-			DrawCube(
+			DrawCubeNormals(
 				(Vector3) {
 					tracedRays[i], 
 					tracedRays[i + 1], 
@@ -408,6 +462,8 @@ int main(void) {
 				(Color) {255, 0, 0, 128}
 			);
 		}*/
+		
+		rlDrawRenderBatchActive();
 		
 		EndMode3D();
 		
@@ -427,6 +483,7 @@ int main(void) {
 			
 			DrawText(TextFormat("Cells av. size (arrows) after (J)oin: %d m", cellsAverageSize), 0, fnt.baseSize * line * 2, fnt.baseSize * 2, BLACK); line++;
 			DrawText(TextFormat("Avg size: %.2f m", (float) pow(avgCellSize, 1 / 3.0)), 0, fnt.baseSize * line * 2, fnt.baseSize * 2, BLACK); line++;
+			DrawText(TextFormat("Cells count: %d", cvector_size(joinedCells)), 0, fnt.baseSize * line * 2, fnt.baseSize * 2, BLACK); line++;
 			DrawText(TextFormat("Use (C)ell data: %s", useCellData ? "on" : "off"), 0, fnt.baseSize * line * 2, fnt.baseSize * 2, BLACK); line++;
 			DrawText(TextFormat("(H)ide world: %s", hideWorld ? "on" : "off"), 0, fnt.baseSize * line * 2, fnt.baseSize * 2, BLACK); line++;
 		}
@@ -439,6 +496,9 @@ int main(void) {
 
 	UnloadTexture(tex);
 	UnloadModel(mdl);
+	UnloadModel(cube);
+	UnloadShader(shader);
+	
     CloseWindow();
 	
 	return 0;
