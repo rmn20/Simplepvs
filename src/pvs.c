@@ -126,7 +126,7 @@ inline void _getCellBounds(PVSdb* db, const size_t* pos, float* min, float* max)
 inline size_t mins(size_t a, size_t b) {
 	if(a < b) return a;
 	return b;
-}
+} 
 
 inline size_t maxs(size_t a, size_t b) {
 	if(a > b) return a;
@@ -322,6 +322,21 @@ float _sign(float a) {
 	else return 0;
 }
 
+
+typedef struct {
+	size_t mdlIndex;
+	float hitDist;
+} MdlToRaycast;
+
+int mdlHitDistanceCompare(const void *a, const void *b) {
+	float mdl1 = ((MdlToRaycast*) a)->hitDist;
+	float mdl2 = ((MdlToRaycast*) b)->hitDist;
+	
+	if(mdl1 < mdl2) return -1;
+	else if(mdl1 > mdl2) return 1;
+	else return 0;
+}
+
 size_t pvsCompute(PVSdb* db, PVSModel mdl, float raysDensity, float adaptRaysCountDistance, float* dpos, float* dhit) {
 	srand(time(NULL));
 	
@@ -329,6 +344,8 @@ size_t pvsCompute(PVSdb* db, PVSModel mdl, float raysDensity, float adaptRaysCou
 	
 	for(size_t meshId=0; meshId<cvector_size(mdl.meshes); meshId++) {
 		PVSMesh mesh = mdl.meshes[meshId];
+			
+		size_t meshRaysCount = 0;
 		
 		//lazy multithreading..
 		#pragma omp parallel
@@ -341,7 +358,12 @@ size_t pvsCompute(PVSdb* db, PVSModel mdl, float raysDensity, float adaptRaysCou
 			PVSRay hitRays[maxResults];
 			PVSRayHit hitResults[maxResults];
 			size_t hitResMeshId[maxResults];
-			size_t hitResultsCount = 0;
+			size_t hitResultsCount = 0, missCounts = 0;
+			
+			cvector_vector_type(MdlToRaycast) mdlsToRaycast = NULL;
+			cvector_reserve(mdlsToRaycast, cvector_size(mdl.meshes));
+			
+			size_t localMeshRaysCount = 0;
 			
 			for(size_t faceId=startFace; faceId<endFace; faceId++) {
 				
@@ -355,9 +377,12 @@ size_t pvsCompute(PVSdb* db, PVSModel mdl, float raysDensity, float adaptRaysCou
 				
 				float S = (distAB + distBC + distAC) / 2;
 				float faceArea = sqrtf(S * (S-distAB) * (S-distBC) * (S-distAC) / 2);
+				//float faceArea = distAB + distBC + distAC;
 				
 				size_t faceRays = (size_t) round(raysDensity * faceArea);
 				if(faceRays == 0) faceRays = 1;
+				
+				localMeshRaysCount += faceRays;
 				
 				//Used for adaptive rays count
 				float maxHitDist = 1;
@@ -391,9 +416,9 @@ size_t pvsCompute(PVSdb* db, PVSModel mdl, float raysDensity, float adaptRaysCou
 					//Starting direction
 					//Generating uniformly distributed random directions 
 					while(true) {
-						ray.dir[0] = randf() * 2 - 1;
-						ray.dir[1] = randf() * 2 - 1;
-						ray.dir[2] = randf() * 2 - 1;
+						ray.dir[0] = (randf() + randf()) * 2 - 1;
+						ray.dir[1] = (randf() + randf()) * 2 - 1;
+						ray.dir[2] = (randf() + randf()) * 2 - 1;
 						
 						float len = sqrtf(pow2f(ray.dir[0]) + pow2f(ray.dir[1]) + pow2f(ray.dir[2]));
 						if(len == 0) continue;
@@ -425,26 +450,43 @@ size_t pvsCompute(PVSdb* db, PVSModel mdl, float raysDensity, float adaptRaysCou
 					if(ray.dir[2] > 0) ray.length = fminf(ray.length, (db->max[2] - ray.start[2]) / ray.dir[2]);
 					else if(ray.dir[2] < 0) ray.length = fminf(ray.length, (db->min[2] - ray.start[2]) / ray.dir[2]);
 					
-					//Raycasting
-					PVSRayHit rayHit;
-					rayHit.hit = false;
+					//Form list of meshes to raycast
+					cvector_clear(mdlsToRaycast);
 					
-					for(int t=0; t<cvector_size(mdl.meshes); t++) {
+					for(size_t t=0; t<cvector_size(mdl.meshes); t++) {
 						PVSMesh* meshCast = mdl.meshes + t;
-						
 						PVSRayHit tmpHit = {0};
 						
-						if(rayAABBtest(&ray, meshCast->min, meshCast->max) && raycastCube(&tmpHit, &ray, meshCast->min, meshCast->max)) {
-							bool hit = rayCast(&rayHit, meshCast, &ray, t==meshId?faceId:-1);
-							
-							if(hit) ray.length = rayHit.hitDistance;
-						}
+						if(!rayAABBtest(&ray, meshCast->min, meshCast->max)) continue;
+						if(!raycastCube(&tmpHit, &ray, meshCast->min, meshCast->max)) continue;
+						
+						MdlToRaycast mdlToRaycast = {t, tmpHit.hitDistance};
+						cvector_push_back(mdlsToRaycast, mdlToRaycast);
 					}
 					
-					hitResults[hitResultsCount] = rayHit;
-					hitRays[hitResultsCount] = ray;
-					hitResMeshId[hitResultsCount] = mesh.id;
-					hitResultsCount++;
+					qsort(mdlsToRaycast, cvector_size(mdlsToRaycast), sizeof(MdlToRaycast), &mdlHitDistanceCompare);
+					
+					//Raycasting
+					PVSRayHit rayHit = {0};
+					
+					for(int t=0; t<cvector_size(mdlsToRaycast); t++) {
+						size_t mdlIndex = mdlsToRaycast[t].mdlIndex;
+						PVSMesh* meshCast = mdl.meshes + mdlIndex;
+						
+						if(rayHit.hit && ray.length < mdlsToRaycast[t].hitDist) break;
+					
+						bool hit = rayCast(&rayHit, meshCast, &ray, mdlIndex==meshId?faceId:-1);
+						if(hit) ray.length = rayHit.hitDistance;
+					}
+				
+					if(!rayHit.hitBackFace) {
+					//if(!rayHit.hitBackFace && (rayHit.hit || ray.dir[1] > 0)) {
+					//if(!rayHit.hitBackFace && rayHit.hit) {//(rayHit.hit || ray.start[1] + ray.dir[1] * ray.length >= db->max[1])) {
+						hitResults[hitResultsCount] = rayHit;
+						hitRays[hitResultsCount] = ray;
+						hitResMeshId[hitResultsCount] = mesh.id;
+						hitResultsCount++;
+					} else missCounts++;
 					
 					//Update required rays count
 					if(rayHit.hit && !rayHit.hitBackFace && rayHit.hitDistance / adaptRaysCountDistance > maxHitDist) {
@@ -458,16 +500,16 @@ size_t pvsCompute(PVSdb* db, PVSModel mdl, float raysDensity, float adaptRaysCou
 						
 						adaptFaceRays = (size_t) round(faceRays * pow2f(maxHitDist));
 					}
-					
 
 					//lazy multithreading..
 					if(hitResultsCount == maxResults) {
 						#pragma omp critical
 						{
 							for(size_t resId = 0; resId < hitResultsCount; resId++) {
-								if(!hitResults[resId].hitBackFace) _pvsProcessRaycastResult(db, hitResMeshId[resId], hitResults + resId, hitRays + resId);
+								_pvsProcessRaycastResult(db, hitResMeshId[resId], hitResults + resId, hitRays + resId);
 								
-								/*if(hitResMeshId[resId] == 11 && (hitRays[resId].start[2] + hitRays[resId].dir[2] * hitRays[resId].length) < -40 && hitRays[resId].start[1] < 5) {
+								//if(hitResMeshId[resId] == 11 && (hitRays[resId].start[2] + hitRays[resId].dir[2] * hitRays[resId].length) < -40 && hitRays[resId].start[1] < 5) {
+								/*if((hitResMeshId[resId] == 0 && hitResMeshHitId[resId] == 3) || (hitResMeshId[resId] == 3 && hitResMeshHitId[resId] == 0)) {
 									dpos[0] = hitRays[resId].start[0];
 									dpos[1] = hitRays[resId].start[1];
 									dpos[2] = hitRays[resId].start[2];
@@ -478,13 +520,15 @@ size_t pvsCompute(PVSdb* db, PVSModel mdl, float raysDensity, float adaptRaysCou
 								}*/
 							}
 							
-							raysCount += hitResultsCount;
+							raysCount += hitResultsCount + missCounts;
 						}
 						
 						hitResultsCount = 0;
+						missCounts = 0;
 					}
 				}
 			}
+			
 			#pragma omp barrier
 			#pragma omp critical
 			{
@@ -503,7 +547,12 @@ size_t pvsCompute(PVSdb* db, PVSModel mdl, float raysDensity, float adaptRaysCou
 				}
 				
 				raysCount += hitResultsCount;
+				meshRaysCount += localMeshRaysCount;
 			}
+			
+			cvector_free(mdlsToRaycast);
+			
+			printf("expected rays: %llu, real rays count: %llu\n", (size_t) round(raysDensity * mesh.facesArea), meshRaysCount);
 		}
 		
 		int printEvery = cvector_size(mdl.meshes) / 10;
@@ -595,7 +644,7 @@ double _cellsError(PVSdb* db, PVSModel* mdl, char* tmpVisMeshes, size_t visMeshe
 					int meshError = (tmpVisMeshes[i / 8] ^ cell->visMesh[i / 8]) >> (i&7);
 					meshError &= 1;
 					
-					error += meshError * (useFacesArea ? mdl->meshes[i].facesArea : 1);
+					error += meshError * mdl->meshes[i].facesArea * mdl->meshes[i].facesCount;//(useFacesArea ? mdl->meshes[i].facesArea : mdl->meshes[i].facesCount);
 				}
 				/*for(size_t i=0; i<visMeshesSize; i++) {
 					int cellError = tmpVisMeshes[i] ^ cell->visMesh[i];
@@ -610,14 +659,12 @@ double _cellsError(PVSdb* db, PVSModel* mdl, char* tmpVisMeshes, size_t visMeshe
 	return error;
 }
 
-inline void _cellFindSplit(PVSdb* db, PVSModel* mdl, char* tmpVisMeshes, size_t visMeshesSize, PVSCell* cell, int* splitAxis, double* minSplitError, double* minMaxSplitError, size_t* splitPos) {
+inline void _cellFindSplit(PVSdb* db, PVSModel* mdl, char* tmpVisMeshes, size_t visMeshesSize, PVSCell* cell, int* splitAxis, double* minSplitError, double* minMaxSplitError, size_t* splitPos, bool useFacesArea) {
 	//Find a axis aligned split plane
 	*splitAxis = -1;
 	*minSplitError = 0;
 	*minMaxSplitError = 0;
 	*splitPos = 0;
-	
-	bool useFacesArea = true;
 	
 	for(int axis=0; axis<3; axis++) {
 		
@@ -689,11 +736,11 @@ cvector_vector_type(PVSCell) pvsJoinCells(PVSdb* db, PVSModel mdl, size_t cellsC
 				double minSplitError;
 				double minMaxSplitError;
 				size_t splitPos;
-				_cellFindSplit(db, &mdl, tmpVisMeshes, visMeshesSize, cell, &splitAxis, &minSplitError, &minMaxSplitError, &splitPos);
+				_cellFindSplit(db, &mdl, tmpVisMeshes, visMeshesSize, cell, &splitAxis, &minSplitError, &minMaxSplitError, &splitPos, useFacesArea);
 				
 				if(minSplitError > err) printf("wtf\n");
 				
-				err = err - minMaxSplitError;
+				err = err - minSplitError;
 			}
 			
 			if(err > splitCellError) {
@@ -712,7 +759,7 @@ cvector_vector_type(PVSCell) pvsJoinCells(PVSdb* db, PVSModel mdl, size_t cellsC
 		double minSplitError;
 		double minMaxSplitError;
 		size_t splitPos;
-		_cellFindSplit(db, &mdl, tmpVisMeshes, visMeshesSize, splitCell, &splitAxis, &minSplitError, &minMaxSplitError, &splitPos);
+		_cellFindSplit(db, &mdl, tmpVisMeshes, visMeshesSize, splitCell, &splitAxis, &minSplitError, &minMaxSplitError, &splitPos, useFacesArea);
 		
 		//There is nothing to split (this shouldnt be possible?)
 		//if(splitAxis == -1) break;
