@@ -11,34 +11,52 @@
 #include "raymath.h"
 #include "cvector.h"
 
-#include "pvs_model.c"
-#include "pvs_raycast.c"
 #include "pvs.c"
 
+typedef struct {
+	float hitDist;
+	int mdlIndex;
+} MdlToRaycast;
+
+int mdlHitDistanceCompare(const void *a, const void *b) {
+	float mdl1 = *(float*)a;
+	float mdl2 = *(float*)b;
+	
+	if(mdl1 < mdl2) return -1;
+	else if(mdl1 > mdl2) return 1;
+	else return 0;
+}
+
 int main(void) {
+	SetConfigFlags(FLAG_MSAA_4X_HINT);
 	InitWindow(1280, 720, "pvs test");
 	SetWindowState(FLAG_WINDOW_RESIZABLE);
 	
     SetTargetFPS(60);
 	
-	Model mdl = LoadModel("test2.glb");
-	Texture2D tex = LoadTexture("tex2.png");
+	Model mdl = LoadModel("neighbourhood.glb");
+	Texture2D tex = LoadTexture("44.png");
 	GenTextureMipmaps(&tex);
 	//SetTextureFilter(tex, TEXTURE_FILTER_POINT);
 	rlTextureParameters(tex.id, RL_TEXTURE_MIN_FILTER, RL_TEXTURE_FILTER_NEAREST_MIP_LINEAR);
 	rlTextureParameters(tex.id, RL_TEXTURE_MAG_FILTER, RL_TEXTURE_FILTER_NEAREST_MIP_LINEAR);
 	//rlTextureParameters(tex.id, RL_TEXTURE_FILTER_ANISOTROPIC, 16);
-	mdl.materials[0].maps[MATERIAL_MAP_ALBEDO].texture = tex;
+	//mdl.materials[0].maps[MATERIAL_MAP_ALBEDO].texture = tex;
+	
+	BoundingBox modelAABB = GetModelBoundingBox(mdl);
+	BoundingBox* meshesAABB = malloc(sizeof(BoundingBox) * mdl.meshCount);
+	assert(meshesAABB);
+	
+	for(int i = 0; i < mdl.meshCount; i++) {
+		meshesAABB[i] = GetMeshBoundingBox(mdl.meshes[i]);
+	}
 	
 	/*int size;
 	char* data = LoadFileData("out.lrb", &size);*/
 	
 	Model cube = LoadModelFromMesh(GenMeshCube(1, 1, 1));
 	
-	#define GLSL_VERSION 330
-	
-	Shader shader = LoadShader(TextFormat("shaders/shader-glsl%i.vs", GLSL_VERSION),
-                               TextFormat("shaders/shader-glsl%i.fs", GLSL_VERSION));
+	Shader shader = LoadShader("shaders/fresnel.vs", "shaders/fresnel.fs");
 	shader.locs[SHADER_LOC_VECTOR_VIEW] = GetShaderLocation(shader, "viewPos");
 	
 	mdl.materials[0].shader = shader;
@@ -50,20 +68,18 @@ int main(void) {
 	
 	int t = 0;
 	
-	PVSRay ray = {0};
-	PVSRayHit rayHit = {0};
-	
 	//todo unload!!!
 	bool usePVS = true;
 	bool lockPVS = false;
 	bool useCellData = false;
 	bool hideWorld = false;
 	
+	PVSModelData pvsMdlData = {0};
 	PVSdb pvsDB = {0};
-	PVSModel pvsMdl = {NULL};
-	pvsLoadObj(&pvsMdl, "test2.obj");
 	
-	pvsInitDB(&pvsDB, pvsMdl, 3);
+	pvsInitModelData(&pvsMdlData, &mdl)
+	pvsInitDB(&pvsDB, &pvsMdlData, 3);
+	
 	size_t totalRays = 0;
 	double raysComputeTime = 0;
 	
@@ -88,55 +104,40 @@ int main(void) {
 	int posAnimId = -1;
 	clock_t posAnimStart = 0;
 	
-	printf("THREADS: %d\n", omp_get_max_threads());
-	
 	float dpos[3] = {0};
 	float dhit[3] = {0};
 	
 	while(!WindowShouldClose()) {
-		
+		//Camera rotation
 		if(IsWindowFocused()) {
 			Vector2 delta = GetMouseDelta();
 			rotY -= delta.x / GetRenderHeight() * 90;
 			rotX += delta.y / GetRenderHeight() * 90;
+			
 			if(rotX < -89) rotX = -89;
 			if(rotX > 89) rotX = 89;
 			
-			SetMousePosition(GetRenderWidth()/2, GetRenderHeight()/2);
+			SetMousePosition(GetRenderWidth() / 2, GetRenderHeight() / 2);
 		}
 		
-		//Movement
-		float speed = 0.12 * (IsKeyDown(KEY_LEFT_SHIFT) ? 3 : 1) * (IsKeyDown(KEY_LEFT_CONTROL) ? 0.333 : 1);
+		//Camera movement
+		Vector3 moveVec = (Vector3) {0};
 		
-		if(IsKeyDown(KEY_W)) {
-			Vector3 vec = (Vector3) {0, 0, speed};
+		if(IsKeyDown(KEY_W)) moveVec.z += 1;
+		if(IsKeyDown(KEY_S)) moveVec.z -= 1;
+		if(IsKeyDown(KEY_A)) moveVec.x += 1;
+		if(IsKeyDown(KEY_D)) moveVec.x -= 1;
+		
+		if(moveVec.x != 0 || moveVec.y != 0 || moveVec.z != 0) {
+			float speed = 0.12f * (IsKeyDown(KEY_LEFT_SHIFT) ? 3 : 1) * (IsKeyDown(KEY_LEFT_CONTROL) ? 0.333f : 1);
+			speed *= GetFrameTime() / (1 / 60.0f);
 			
-			vec = Vector3RotateByAxisAngle(vec, (Vector3) {1, 0, 0}, rotX * M_PI / 180);
-			vec = Vector3RotateByAxisAngle(vec, (Vector3) {0, 1, 0}, rotY * M_PI / 180);
+			moveVec = Vector3Scale(Vector3Normalize(moveVec), speed);
 			
-			camPos = Vector3Add(camPos, vec);
-		}
-		if(IsKeyDown(KEY_S)) {
-			Vector3 vec = (Vector3) {0, 0, -speed};
+			moveVec = Vector3RotateByAxisAngle(moveVec, (Vector3) {1, 0, 0}, rotX * M_PI / 180);
+			moveVec = Vector3RotateByAxisAngle(moveVec, (Vector3) {0, 1, 0}, rotY * M_PI / 180);
 			
-			vec = Vector3RotateByAxisAngle(vec, (Vector3) {1, 0, 0}, rotX * M_PI / 180);
-			vec = Vector3RotateByAxisAngle(vec, (Vector3) {0, 1, 0}, rotY * M_PI / 180);
-			
-			camPos = Vector3Add(camPos, vec);
-		}
-		if(IsKeyDown(KEY_A)) {
-			Vector3 vec = (Vector3) {speed, 0, 0};
-			
-			vec = Vector3RotateByAxisAngle(vec, (Vector3) {0, 1, 0}, rotY * M_PI / 180);
-			
-			camPos = Vector3Add(camPos, vec);
-		}
-		if(IsKeyDown(KEY_D)) {
-			Vector3 vec = (Vector3) {-speed, 0, 0};
-			
-			vec = Vector3RotateByAxisAngle(vec, (Vector3) {0, 1, 0}, rotY * M_PI / 180);
-			
-			camPos = Vector3Add(camPos, vec);
+			camPos = Vector3Add(camPos, moveVec);
 		}
 		
 		//Animation
@@ -149,35 +150,6 @@ int main(void) {
 			}
 		}
 		
-		//PVS Contols
-		if(IsKeyPressed(KEY_Q)) {
-			Vector3 vec = (Vector3) {0, 0, speed};
-			
-			vec = Vector3RotateByAxisAngle(vec, (Vector3) {1, 0, 0}, rotX * M_PI / 180);
-			vec = Vector3RotateByAxisAngle(vec, (Vector3) {0, 1, 0}, rotY * M_PI / 180);
-			
-			ray.start[0] = camPos.x;
-			ray.start[1] = camPos.y;
-			ray.start[2] = camPos.z;
-			
-			ray.dir[0] = vec.x;
-			ray.dir[1] = vec.y;
-			ray.dir[2] = vec.z;
-			
-			ray.length = FLT_MAX;
-			
-			rayHit.hit = false;
-			
-			for(int i=0; i<cvector_size(pvsMdl.meshes); i++) {
-				rayCast(&rayHit, pvsMdl.meshes + i, &ray, -1);
-			}
-			
-			if(rayHit.hit) printf("hit! ");
-			else printf("miss! ");
-			
-			printf("%f %f %f %f\n", ray.start[0], ray.start[1], ray.start[2], rayHit.hitDistance);
-		}
-		
 		
 		if(IsKeyPressed(KEY_L)) lockPVS = !lockPVS;
 		if(IsKeyPressed(KEY_P)) usePVS = !usePVS;
@@ -185,7 +157,7 @@ int main(void) {
 		
 		if(IsKeyPressed(KEY_X)) {
 			clock_t start = clock();
-			totalRays += pvsCompute(&pvsDB, pvsMdl, 32, 8, dpos, dhit);
+			totalRays += pvsCompute(&pvsDB, &mdl, camPos);
 			//totalRays += pvsCompute(&pvsDB, pvsMdl, 6.54f, 8, dpos, dhit);
 			//totalRays += pvsCompute(&pvsDB, pvsMdl, 48, 99999, dpos, dhit);
 			//totalRays += pvsCompute(&pvsDB, pvsMdl, 48, 8, dpos, dhit);
@@ -209,7 +181,7 @@ int main(void) {
 			cellsCount /= cellsAverageSize * cellsAverageSize * cellsAverageSize;
 			
 			cvector_free(joinedCells);
-			joinedCells = pvsJoinCells(&pvsDB, pvsMdl, cellsCount, 0, IsKeyDown(KEY_LEFT_SHIFT));
+			joinedCells = pvsJoinCells(&pvsDB, cellsCount, 0, IsKeyDown(KEY_LEFT_SHIFT));
 		}
 		
 		//Update animation
@@ -317,7 +289,7 @@ int main(void) {
 					pvsRes.visible = joinedCells[i].visMesh;
 					
 					for(size_t t=0; t<pvsRes.meshesCount; t++) {
-						pvsRes.visMeshesCount += (pvsRes.visible[t / 8] & (1 << (t % 8))) != 0;
+						pvsRes.visMeshesCount += (pvsRes.visible[t / 32] & (1 << (t % 32))) != 0;
 					}
 				}
 			}
@@ -328,7 +300,7 @@ int main(void) {
 		rlSetLineWidth(5);
 		if(!hideWorld) for(int i=0; i<mdl.meshCount; i++) {
 			
-			bool visible = !usePVS || (pvsRes.visMeshesCount > 0 && (pvsRes.visible[i / 8] & (1 << (i % 8))) != 0);
+			bool visible = !usePVS || (pvsRes.visMeshesCount > 0 && (pvsRes.visible[i / 32] & (1 << (i % 32))) != 0);
 			int matId = 0;//
 			matId = mdl.meshMaterial[i];
 			
@@ -359,8 +331,8 @@ int main(void) {
 			rlDisableWireMode();
 			
 			if(IsKeyDown(KEY_LEFT_CONTROL)) {
-				float* min = pvsMdl.meshes[i].min;
-				float* max = pvsMdl.meshes[i].max;
+				float* min = (float*) &meshesAABB[i].min;
+				float* max = (float*) &meshesAABB[i].max;
 				
 				DrawCubeWiresV((Vector3) {(min[0] + max[0]) * 0.5f, (min[1] + max[1]) * 0.5f, (min[2] + max[2]) * 0.5f}, (Vector3) {max[0] - min[0], max[1] - min[1], max[2] - min[2]}, RED);
 			}
@@ -382,33 +354,6 @@ int main(void) {
 			(Vector3) {0.5, 0.5, 0.5}, 
 			(Color) {255, 255, 0, 255}
 		);
-	
-		if(rayHit.hit) {
-			Color col = (Color) {rayHit.hitBackFace * 255, 255 - rayHit.hitBackFace * 255, 0, 255};
-			
-			DrawLine3D(
-				(Vector3) {ray.start[0], ray.start[1], ray.start[2]},
-				(Vector3) {
-					ray.start[0] + ray.dir[0] * rayHit.hitDistance, 
-					ray.start[1] + ray.dir[1] * rayHit.hitDistance, 
-					ray.start[2] + ray.dir[2] * rayHit.hitDistance
-				},
-				col
-			);
-			
-			DrawModelEx(
-				cube, 
-				(Vector3) {
-					ray.start[0] + ray.dir[0] * rayHit.hitDistance, 
-					ray.start[1] + ray.dir[1] * rayHit.hitDistance, 
-					ray.start[2] + ray.dir[2] * rayHit.hitDistance
-				},
-				(Vector3) {0, 1, 0}, 
-				0,
-				(Vector3) {0.1, 0.1, 0.1}, 
-				col
-			);
-		}
 		
 		//rlDisableDepthMask();
 		for(size_t i=0; i<cvector_size(joinedCells); i++) {
@@ -437,7 +382,7 @@ int main(void) {
 				col
 			);
 				
-			if(cellsDebug != -1 && ((joinedCells[i].visMesh[cellsDebug/8] >> (cellsDebug&7)) & 1) == 0) {
+			if(cellsDebug != -1 && ((joinedCells[i].visMesh[cellsDebug/32] >> (cellsDebug&31)) & 1) == 0) {
 				DrawModelEx(
 					cube, 
 					Vector3Scale(Vector3Add(min, max), 0.5),
@@ -477,14 +422,9 @@ int main(void) {
 			line++;
 			
 			DrawText(TextFormat("PVS calc (X) time: %.2f sec", raysComputeTime), 0, fnt.baseSize * line * 2, fnt.baseSize * 2, BLACK); line++;
-			DrawText(TextFormat("Total rays: %ld", totalRays), 0, fnt.baseSize * line * 2, fnt.baseSize * 2, BLACK); line++;
-			DrawText(TextFormat("Rays per sec: %d", (int) (totalRays / raysComputeTime)), 0, fnt.baseSize * line * 2, fnt.baseSize * 2, BLACK); line++;
+			DrawText(TextFormat("Total cubemaps: %ld (%d per sec)", totalRays, (int) (totalRays / raysComputeTime)), 0, fnt.baseSize * line * 2, fnt.baseSize * 2, BLACK); line++;
 			line++;
 			
-			DrawText(TextFormat("Cells av. size (arrows) after (J)oin: %d m", cellsAverageSize), 0, fnt.baseSize * line * 2, fnt.baseSize * 2, BLACK); line++;
-			DrawText(TextFormat("Avg size: %.2f m", (float) pow(avgCellSize, 1 / 3.0)), 0, fnt.baseSize * line * 2, fnt.baseSize * 2, BLACK); line++;
-			DrawText(TextFormat("Cells count: %d", cvector_size(joinedCells)), 0, fnt.baseSize * line * 2, fnt.baseSize * 2, BLACK); line++;
-			DrawText(TextFormat("Use (C)ell data: %s", useCellData ? "on" : "off"), 0, fnt.baseSize * line * 2, fnt.baseSize * 2, BLACK); line++;
 			DrawText(TextFormat("(H)ide world: %s", hideWorld ? "on" : "off"), 0, fnt.baseSize * line * 2, fnt.baseSize * 2, BLACK); line++;
 		}
 

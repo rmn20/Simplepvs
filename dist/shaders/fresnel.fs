@@ -1,4 +1,4 @@
-#version 330
+#version 430
 
 // Input vertex attributes (from vertex shader)
 in vec3 fragPosition;
@@ -16,8 +16,7 @@ out vec4 finalColor;
 
 uniform vec3 viewPos;
 
-void main()
-{
+void main() {
     // Texel color fetching from texture sampler
     vec4 texelColor = texture(texture0, fragTexCoord);
 	
