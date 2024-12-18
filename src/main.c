@@ -34,25 +34,16 @@ int main(void) {
 	
     SetTargetFPS(60);
 	
-	Model mdl = LoadModel("neighbourhood.glb");
+	Model mdl = LoadModel("de_dust.glb");
 	Texture2D tex = LoadTexture("44.png");
 	GenTextureMipmaps(&tex);
 	//SetTextureFilter(tex, TEXTURE_FILTER_POINT);
 	rlTextureParameters(tex.id, RL_TEXTURE_MIN_FILTER, RL_TEXTURE_FILTER_NEAREST_MIP_LINEAR);
 	rlTextureParameters(tex.id, RL_TEXTURE_MAG_FILTER, RL_TEXTURE_FILTER_NEAREST_MIP_LINEAR);
 	//rlTextureParameters(tex.id, RL_TEXTURE_FILTER_ANISOTROPIC, 16);
-	//mdl.materials[0].maps[MATERIAL_MAP_ALBEDO].texture = tex;
+	mdl.materials[0].maps[MATERIAL_MAP_ALBEDO].texture = tex;
 	
-	BoundingBox modelAABB = GetModelBoundingBox(mdl);
-	BoundingBox* meshesAABB = malloc(sizeof(BoundingBox) * mdl.meshCount);
-	assert(meshesAABB);
-	
-	for(int i = 0; i < mdl.meshCount; i++) {
-		meshesAABB[i] = GetMeshBoundingBox(mdl.meshes[i]);
-	}
-	
-	/*int size;
-	char* data = LoadFileData("out.lrb", &size);*/
+	int aniso = 0;
 	
 	Model cube = LoadModelFromMesh(GenMeshCube(1, 1, 1));
 	
@@ -77,13 +68,11 @@ int main(void) {
 	PVSModelData pvsMdlData = {0};
 	PVSdb pvsDB = {0};
 	
-	pvsInitModelData(&pvsMdlData, &mdl)
+	pvsInitModelData(&pvsMdlData, &mdl);
 	pvsInitDB(&pvsDB, &pvsMdlData, 3);
 	
 	size_t totalRays = 0;
 	double raysComputeTime = 0;
-	
-	cvector_vector_type(PVSCell) joinedCells = NULL;
 	
 	PVSResult pvsRes = {0};
 	int cellsAverageSize = 10;
@@ -173,15 +162,9 @@ int main(void) {
 		
 		if(IsKeyPressed(KEY_C)) useCellData = !useCellData;
 		
-		if(IsKeyPressed(KEY_J)) {
-			
-			size_t cellsCount = (pvsDB.max[0] - pvsDB.min[0]) * (pvsDB.max[1] - pvsDB.min[1]) * (pvsDB.max[2] - pvsDB.min[2]);
-			//cellsCount *= pvsDB.cellsX * pvsDB.cellsY * pvsDB.cellsZ;
-			//cellsCount /= pvsDB.cellsX * pvsDB.cellsY * pvsDB.cellsZ;
-			cellsCount /= cellsAverageSize * cellsAverageSize * cellsAverageSize;
-			
-			cvector_free(joinedCells);
-			joinedCells = pvsJoinCells(&pvsDB, cellsCount, 0, IsKeyDown(KEY_LEFT_SHIFT));
+		if(IsKeyPressed(KEY_F)) {
+			aniso ^= 1;
+			rlTextureParameters(tex.id, RL_TEXTURE_FILTER_ANISOTROPIC, aniso * 16);
 		}
 		
 		//Update animation
@@ -220,7 +203,7 @@ int main(void) {
 		SetShaderValue(shader, shader.locs[SHADER_LOC_VECTOR_VIEW], &camPos, SHADER_UNIFORM_VEC3);
 		
 		if(!lockPVS) pvsCamPos = camPos;
-		pvsRes = pvsGetGridVisibility(&pvsDB, pvsCamPos.x, pvsCamPos.y, pvsCamPos.z);
+		pvsRes = pvsGetVisData(&pvsDB, pvsCamPos);
 		
 		BeginDrawing();
 		ClearBackground(RAYWHITE);
@@ -252,55 +235,10 @@ int main(void) {
 			(Color) {255, 255, 0, 255}
 		);
 		
-		//printf("%d\n", janua_res.model_ids_count);
-		//printf("%d\n", mdl.meshCount);
-		
-		float avgCellSize = 0;
-		
-		if(useCellData) {
-			pvsRes.visMeshesCount = 0;
-			
-			for(size_t i=0; i<cvector_size(joinedCells); i++) {
-				Vector3 min = (Vector3) {joinedCells[i].min[0], joinedCells[i].min[1], joinedCells[i].min[2]};
-				Vector3 max = (Vector3) {joinedCells[i].max[0], joinedCells[i].max[1], joinedCells[i].max[2]};
-				
-				Vector3 gridSize = (Vector3) {pvsDB.cellsX, pvsDB.cellsY, pvsDB.cellsZ};
-				Vector3 dbSize = (Vector3) {pvsDB.max[0] - pvsDB.min[0], pvsDB.max[1] - pvsDB.min[1], pvsDB.max[2] - pvsDB.min[2]};
-				Vector3 dbPos = (Vector3) {pvsDB.min[0], pvsDB.min[1], pvsDB.min[2]};
-			
-				min = Vector3Multiply(min, dbSize);
-				min = Vector3Divide(min, gridSize);
-				min = Vector3Add(min, dbPos);
-				
-				max = Vector3Multiply(max, dbSize);
-				max = Vector3Divide(max, gridSize);
-				max = Vector3Add(max, dbPos);
-				
-				Vector3 size = Vector3Subtract(max, min);
-				
-				avgCellSize += size.x * size.y * size.z;
-				
-				if(
-					pvsCamPos.x >= min.x && pvsCamPos.x <= max.x && 
-					pvsCamPos.y >= min.y && pvsCamPos.y <= max.y &&
-					pvsCamPos.z >= min.z && pvsCamPos.z <= max.z) {
-					
-					pvsRes.meshesCount = pvsDB.meshes;
-					pvsRes.visible = joinedCells[i].visMesh;
-					
-					for(size_t t=0; t<pvsRes.meshesCount; t++) {
-						pvsRes.visMeshesCount += (pvsRes.visible[t / 32] & (1 << (t % 32))) != 0;
-					}
-				}
-			}
-			
-			avgCellSize /= cvector_size(joinedCells);
-		}
-		
 		rlSetLineWidth(5);
 		if(!hideWorld) for(int i=0; i<mdl.meshCount; i++) {
 			
-			bool visible = !usePVS || (pvsRes.visMeshesCount > 0 && (pvsRes.visible[i / 32] & (1 << (i % 32))) != 0);
+			bool visible = !usePVS || (pvsRes.visMeshCount > 0 && (pvsRes.visible[i / 32] & (1 << (i % 32))) != 0);
 			int matId = 0;//
 			matId = mdl.meshMaterial[i];
 			
@@ -329,13 +267,6 @@ int main(void) {
 			mdl.materials[matId].maps[MATERIAL_MAP_ALBEDO].color = colBack;
 			DrawMesh(mdl.meshes[i], mdl.materials[matId], MatrixMultiply(mdl.transform, transTmp));
 			rlDisableWireMode();
-			
-			if(IsKeyDown(KEY_LEFT_CONTROL)) {
-				float* min = (float*) &meshesAABB[i].min;
-				float* max = (float*) &meshesAABB[i].max;
-				
-				DrawCubeWiresV((Vector3) {(min[0] + max[0]) * 0.5f, (min[1] + max[1]) * 0.5f, (min[2] + max[2]) * 0.5f}, (Vector3) {max[0] - min[0], max[1] - min[1], max[2] - min[2]}, RED);
-			}
 		}
 		
 		rlSetLineWidth(1);
@@ -355,59 +286,6 @@ int main(void) {
 			(Color) {255, 255, 0, 255}
 		);
 		
-		//rlDisableDepthMask();
-		for(size_t i=0; i<cvector_size(joinedCells); i++) {
-			
-			Vector3 min = (Vector3) {joinedCells[i].min[0], joinedCells[i].min[1], joinedCells[i].min[2]};
-			Vector3 max = (Vector3) {joinedCells[i].max[0], joinedCells[i].max[1], joinedCells[i].max[2]};
-			
-			Vector3 gridSize = (Vector3) {pvsDB.cellsX, pvsDB.cellsY, pvsDB.cellsZ};
-			Vector3 dbSize = (Vector3) {pvsDB.max[0] - pvsDB.min[0], pvsDB.max[1] - pvsDB.min[1], pvsDB.max[2] - pvsDB.min[2]};
-			Vector3 dbPos = (Vector3) {pvsDB.min[0], pvsDB.min[1], pvsDB.min[2]};
-			
-			Color col = (Color) {min.x * 255 / (gridSize.x - 1), 0, min.z * 255 / (gridSize.z - 1), 255};
-			//col = (Color) {255, 0, 0, 255};
-			
-			min = Vector3Multiply(min, dbSize);
-			min = Vector3Divide(min, gridSize);
-			min = Vector3Add(min, dbPos);
-			
-			max = Vector3Multiply(max, dbSize);
-			max = Vector3Divide(max, gridSize);
-			max = Vector3Add(max, dbPos);
-			
-			DrawCubeWires(
-				Vector3Scale(Vector3Add(min, max), 0.5),
-				max.x - min.x - 0.5, max.y - min.y - 0.5, max.z - min.z - 0.5,
-				col
-			);
-				
-			if(cellsDebug != -1 && ((joinedCells[i].visMesh[cellsDebug/32] >> (cellsDebug&31)) & 1) == 0) {
-				DrawModelEx(
-					cube, 
-					Vector3Scale(Vector3Add(min, max), 0.5),
-					(Vector3) {0, 1, 0}, 
-					0,
-					(Vector3) {max.x - min.x - 0.5, max.y - min.y - 0.5, max.z - min.z - 0.5}, 
-					RED
-				);
-			}
-		}
-		/*rlDrawRenderBatchActive();
-		rlEnableDepthMask();*/
-		
-		/*for(size_t i=0; i<cvector_size(tracedRays); i+=3) {
-			DrawCubeNormals(
-				(Vector3) {
-					tracedRays[i], 
-					tracedRays[i + 1], 
-					tracedRays[i + 2]
-				},
-				0.02, 0.02, 0.02,
-				(Color) {255, 0, 0, 128}
-			);
-		}*/
-		
 		rlDrawRenderBatchActive();
 		
 		EndMode3D();
@@ -418,7 +296,7 @@ int main(void) {
 			
 			DrawText(TextFormat("(P)VS on: %s", usePVS ? "on" : "off"), 0, fnt.baseSize * line * 2, fnt.baseSize * 2, BLACK); line++;
 			DrawText(TextFormat("(L)ock PVS position: %s", lockPVS ? "on" : "off"), 0, fnt.baseSize * line * 2, fnt.baseSize * 2, BLACK); line++;
-			DrawText(TextFormat("Visible meshes: %ld", pvsRes.visMeshesCount), 0, fnt.baseSize * line * 2, fnt.baseSize * 2, BLACK); line++;
+			DrawText(TextFormat("Visible meshes: %ld", pvsRes.visMeshCount), 0, fnt.baseSize * line * 2, fnt.baseSize * 2, BLACK); line++;
 			line++;
 			
 			DrawText(TextFormat("PVS calc (X) time: %.2f sec", raysComputeTime), 0, fnt.baseSize * line * 2, fnt.baseSize * 2, BLACK); line++;
@@ -433,6 +311,7 @@ int main(void) {
 	}
 	
 	pvsUnloadDB(&pvsDB);
+	pvsUnloadModelData(&pvsMdlData);
 
 	UnloadTexture(tex);
 	UnloadModel(mdl);

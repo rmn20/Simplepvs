@@ -7,48 +7,47 @@
 #include "cvector.h"
 
 #include "raylib.h"
+#include "raymath.h"
 
 typedef struct {
-	size_t min[3];
-	size_t max[3];
-	double error;
-	
-	uint32_t* visMesh;
-} PVSCell;
-
-typedef struct {
-	float min[3];
-	float max[3];
+	Vector3 min, max;
 	
 	float facesArea;
-	size_t faces;
+	int faces;
 } PVSMeshData;
 
 typedef struct {
-	size_t cellsX, cellsY, cellsZ;
-	PVSCell* cellGrid;
+	Vector3 min, max;
 	
-	size_t meshes;
-	PVSMeshData* meshesData;
+	int meshCount;
+	PVSMeshData* meshData;
+} PVSModelData;
+
+typedef struct {
+	int gridSize[3];
+	Vector3 min, max;
 	
-	float min[3];
-	float max[3];
+	int meshCount;
+	
+	int intsPerCell;
+	uint32_t* cells;
 } PVSdb;
 
 typedef struct {
-	size_t meshesCount;
-	size_t visMeshesCount;
+	int meshCount;
+	int visMeshCount;
 	
 	uint32_t* visible;
 } PVSResult;
 
-void pvsInitDB(PVSdb* db, float cellSize, Model* mdl);
+void pvsInitModelData(PVSModelData* mdlData, Model* mdl);
+void pvsUnloadModelData(PVSModelData* mdlData);
+
+void pvsInitDB(PVSdb* db, PVSModelData* mdlData, float cellSize);
 void pvsUnloadDB(PVSdb* db);
 
 size_t pvsCompute(PVSdb* db, Model* mdl, Vector3 camPos);
-PVSResult pvsGetGridVisibility(PVSdb* db, float x, float y, float z);
-
-cvector_vector_type(PVSCell) pvsJoinCells(PVSdb* db, size_t cellsCount, float minError, bool useFacesArea);
+PVSResult pvsGetVisData(PVSdb* db, Vector3 camPos);
 
 #endif
 
@@ -68,34 +67,35 @@ cvector_vector_type(PVSCell) pvsJoinCells(PVSdb* db, size_t cellsCount, float mi
 #include "raymath.h"
 
 inline size_t _getCellPtr(PVSdb* db, size_t x, size_t y, size_t z) {
-	return x + y * db->cellsX + z * db->cellsX * db->cellsY;
+	return x + y * db->gridSize[0] + z * db->gridSize[0] * db->gridSize[1];
 }
 
-void pvsInitDB(PVSdb* db, float cellSize, Model* mdl) {
-	//Compute meshes data
-	db->meshes = mdl->meshCount;
-	db->meshesData = malloc(sizeof(PVSMeshData) * db->meshes);
-	assert(db->meshesData);
+void pvsInitModelData(PVSModelData* mdlData, Model* mdl) {
+	//Allocate memory for meshes data
+	mdlData->meshCount = mdl->meshCount;
+	mdlData->meshData = malloc(sizeof(PVSMeshData) * mdl->meshCount);
+	assert(mdlData->meshData);
 	
-	for(int axis = 0; axis < 3; axis++) {
-		db->min[axis] = FLT_MAX;
-		db->max[axis] = -FLT_MAX;
-	}
+	//Preparations for model AABB calculation
+	mdlData->min = (Vector3) {FLT_MAX, FLT_MAX, FLT_MAX};
+	mdlData->max = (Vector3) {-FLT_MAX, -FLT_MAX, -FLT_MAX};
 	
+	//Compute data for each mesh
 	for(int i = 0; i < mdl->meshCount; i++) {
-		PVSMeshData* meshData = db->meshesData + i;
+		PVSMeshData* meshData = mdlData->meshData + i;
 		const Mesh mesh = mdl->meshes[i];
 		
-		BoundingBox aabb = GetMeshBoundingBox(mesh);
+		BoundingBox meshAABB = GetMeshBoundingBox(mesh);
 		
-		memcpy(meshData->min, &aabb.min, sizeof(Vector3));
-		memcpy(meshData->max, &aabb.max, sizeof(Vector3));
+		//Copy AABB to mesh data
+		meshData->min = meshAABB.min;
+		meshData->max = meshAABB.max;
 		
-		for(int axis = 0; axis < 3; axis++) {
-			db->min[axis] = fminf(db->min[axis], meshData->min[axis]);
-			db->max[axis] = fmaxf(db->max[axis], meshData->max[axis]);
-		}
+		//Update model AABB
+		mdlData->min = Vector3Min(mdlData->min, meshAABB.min);
+		mdlData->max = Vector3Max(mdlData->max, meshAABB.max);
 		
+		//Calculate faces count and summ of faces area
 		meshData->faces = mesh.triangleCount;
 		meshData->facesArea = 0;
 		
@@ -119,81 +119,48 @@ void pvsInitDB(PVSdb* db, float cellSize, Model* mdl) {
 			float distAC = Vector3Distance(a, c);
 			
 			float S = (distAB + distBC + distAC) / 2;
-			meshData->facesArea += sqrtf(S * (S-distAB) * (S-distBC) * (S-distAC) / 2);
+			float faceArea = sqrtf(S * (S-distAB) * (S-distBC) * (S-distAC) / 2);
+			
+			meshData->facesArea += faceArea;
 		}
 	}
+}
+
+void pvsUnloadModelData(PVSModelData* mdlData) {
+	free(mdlData->meshData);
+}
+
+void pvsInitDB(PVSdb* db, PVSModelData* mdlData, float cellSize) {
+	//Copy AABB from model data
+	db->min = mdlData->min;
+	db->max = mdlData->max;
 	
-	//db->max[1] -= 0.4f;
+	//Calculate grid size
+	Vector3 gridSize = Vector3Subtract(db->max, db->min);
+	gridSize = Vector3Scale(gridSize, 1.0f / cellSize);
 	
-	//Create cells
-	db->cellsX = (size_t) roundf((db->max[0] - db->min[0]) / cellSize);
-	db->cellsY = (size_t) roundf((db->max[1] - db->min[1]) / cellSize);
-	db->cellsZ = (size_t) roundf((db->max[2] - db->min[2]) / cellSize);
+	db->gridSize[0] = (int) roundf(gridSize.x);
+	db->gridSize[1] = (int) roundf(gridSize.y);
+	db->gridSize[2] = (int) roundf(gridSize.z);
 	
-	if(db->cellsX == 0) db->cellsX = 1;
-	if(db->cellsY == 0) db->cellsY = 1;
-	if(db->cellsZ == 0) db->cellsZ = 1;
+	if(db->gridSize[0] < 1) db->gridSize[0] = 1;
+	if(db->gridSize[1] < 1) db->gridSize[1] = 1;
+	if(db->gridSize[2] < 1) db->gridSize[2] = 1;
 	
-	//db->cells = NULL;
-	db->cellGrid = malloc(sizeof(PVSCell) * db->cellsX * db->cellsY * db->cellsZ);
-	assert(db->cellGrid);
+	//Allocate visibility cells
+	db->meshCount = mdlData->meshCount;
+	db->intsPerCell = (db->meshCount / 32) + ((db->meshCount % 32) > 0 ? 1 : 0);
 	
-	//Fill cells
-	size_t dataPerCell = (db->meshes / 32) + ((db->meshes % 32) > 0 ? 1 : 0);
-	
-	for(size_t z=0; z<db->cellsZ; z++) {
-		for(size_t y=0; y<db->cellsY; y++) {
-			for(size_t x=0; x<db->cellsX; x++) {
-				PVSCell* cell = db->cellGrid + _getCellPtr(db, x, y, z);
-				
-				cell->visMesh = calloc(dataPerCell, sizeof(uint32_t));
-				assert(cell->visMesh);
-			}
-		}
-	}
+	db->cells = calloc(db->gridSize[0] * db->gridSize[1] * db->gridSize[2] * db->intsPerCell, sizeof(uint32_t));
+	assert(db->cells);
 }
 
 void pvsUnloadDB(PVSdb* db) {
-	size_t cells = db->cellsX * db->cellsY * db->cellsZ ;
-	
-	for(size_t i = 0; i<cells; i++) {
-		PVSCell* cell = db->cellGrid + i;
-		
-		free(cell->visMesh);
-	}
-	
-	free(db->cellGrid);
-	free(db->meshesData);
-}
-
-inline void _getCellPos(PVSdb* db, const float* pos, size_t* out) {
-	out[0] = (size_t) fminf(db->cellsX - 1, fmaxf(pos[0] - db->min[0], 0) * db->cellsX / (db->max[0] - db->min[0]));
-	out[1] = (size_t) fminf(db->cellsY - 1, fmaxf(pos[1] - db->min[1], 0) * db->cellsY / (db->max[1] - db->min[1]));
-	out[2] = (size_t) fminf(db->cellsZ - 1, fmaxf(pos[2] - db->min[2], 0) * db->cellsZ / (db->max[2] - db->min[2]));
-}
-
-inline void _getCellPosF(PVSdb* db, const float* pos, float* out) {
-	out[0] = fminf(db->cellsX, fmaxf(pos[0] - db->min[0], 0) * db->cellsX / (db->max[0] - db->min[0]));
-	out[1] = fminf(db->cellsY, fmaxf(pos[1] - db->min[1], 0) * db->cellsY / (db->max[1] - db->min[1]));
-	out[2] = fminf(db->cellsZ, fmaxf(pos[2] - db->min[2], 0) * db->cellsZ / (db->max[2] - db->min[2]));
-}
-
-inline void _getCellBounds(PVSdb* db, const size_t* pos, float* min, float* max) {
-	min[0] = pos[0] * (db->max[0] - db->min[0]) / db->cellsX + db->min[0];
-	min[1] = pos[1] * (db->max[1] - db->min[1]) / db->cellsY + db->min[1];
-	min[2] = pos[2] * (db->max[2] - db->min[2]) / db->cellsZ + db->min[2];
-	
-	max[0] = (pos[0] + 1) * (db->max[0] - db->min[0]) / db->cellsX + db->min[0];
-	max[1] = (pos[1] + 1) * (db->max[1] - db->min[1]) / db->cellsY + db->min[1];
-	max[2] = (pos[2] + 1) * (db->max[2] - db->min[2]) / db->cellsZ + db->min[2];
+	free(db->cells);
 }
 
 inline float randf() {
-	return (float)rand() / RAND_MAX;
-}
-
-inline float pow2f(float x) {
-	return x*x;
+	return (float) rand() / RAND_MAX;
 }
 
 typedef struct GpuData {
@@ -262,42 +229,33 @@ size_t pvsCompute(PVSdb* db, Model* mdl, Vector3 camPos) {
 	//Create data struct for use in compute shader
 	GpuData gpuData = {0};
 	
-	gpuData.gridSize[0] = db->cellsX;
-	gpuData.gridSize[1] = db->cellsY;
-	gpuData.gridSize[2] = db->cellsZ;
+	gpuData.gridSize[0] = db->gridSize[0];
+	gpuData.gridSize[1] = db->gridSize[1];
+	gpuData.gridSize[2] = db->gridSize[2];
 	
-	gpuData.aabbMin[0] = db->min[0];
-	gpuData.aabbMin[1] = db->min[1];
-	gpuData.aabbMin[2] = db->min[2];
+	gpuData.aabbMin[0] = db->min.x;
+	gpuData.aabbMin[1] = db->min.y;
+	gpuData.aabbMin[2] = db->min.z;
 	
-	gpuData.aabbMax[0] = db->max[0];
-	gpuData.aabbMax[1] = db->max[1];
-	gpuData.aabbMax[2] = db->max[2];
+	gpuData.aabbMax[0] = db->max.x;
+	gpuData.aabbMax[1] = db->max.y;
+	gpuData.aabbMax[2] = db->max.z;
 	
 	/*gpuData.camPos[0] = (camPos.x - db->min[0]) * db->cellsX / (db->max[0] - db->min[0]);
 	gpuData.camPos[1] = (camPos.y - db->min[1]) * db->cellsY / (db->max[1] - db->min[1]);
 	gpuData.camPos[2] = (camPos.z - db->min[2]) * db->cellsZ / (db->max[2] - db->min[2]);*/
 	
-	gpuData.dataPerCell = (db->meshes / 32) + ((db->meshes % 32) > 0 ? 1 : 0);
+	gpuData.dataPerCell = db->intsPerCell;
 	
-	size_t visBufferSize = db->cellsX * db->cellsY * db->cellsZ * gpuData.dataPerCell;
+	size_t visBufferSize = db->gridSize[0] * db->gridSize[1] * db->gridSize[2] * gpuData.dataPerCell;
 	uint32_t* tmpVisBuffer = malloc(visBufferSize * sizeof(uint32_t));
 	assert(tmpVisBuffer);
 	
-	for(size_t z=0; z<db->cellsZ; z++) {
-		for(size_t y=0; y<db->cellsY; y++) {
-			for(size_t x=0; x<db->cellsX; x++) {
-				
-				PVSCell* cell = db->cellGrid + _getCellPtr(db, x, y, z);
-				
-				memcpy(
-					tmpVisBuffer + _getCellPtr(db, x, y, z) * gpuData.dataPerCell, 
-					cell->visMesh, 
-					gpuData.dataPerCell * sizeof(uint32_t)
-				);
-			}
-		}
-	}
+	memcpy(
+		tmpVisBuffer, 
+		db->cells, 
+		gpuData.dataPerCell * sizeof(uint32_t) * db->gridSize[0] * db->gridSize[1] * db->gridSize[2]
+	);
 	
 	unsigned int sbGrid = rlLoadShaderBuffer(visBufferSize * sizeof(uint32_t), tmpVisBuffer, RL_DYNAMIC_COPY);
 	unsigned int sbData = rlLoadShaderBuffer(sizeof(GpuData), &gpuData, RL_DYNAMIC_COPY);
@@ -335,11 +293,10 @@ size_t pvsCompute(PVSdb* db, Model* mdl, Vector3 camPos) {
 	rlClearColor(0, 0, 0, 255);
 	//glEnable(0x9346); //CONSERVATIVE_RASTERIZATION_NV
 	
-	Vector3 cellSize = {
-		(db->max[0] - db->min[0]) / db->cellsX,
-		(db->max[1] - db->min[1]) / db->cellsY,
-		(db->max[2] - db->min[2]) / db->cellsZ
-	};
+	Vector3 cellSize = Vector3Divide(
+		Vector3Subtract(db->max, db->min), 
+		(Vector3) {db->gridSize[0], db->gridSize[1], db->gridSize[2]}
+	);
 	
 	int prevPercentage = -1;
 	clock_t start = clock();
@@ -367,16 +324,15 @@ size_t pvsCompute(PVSdb* db, Model* mdl, Vector3 camPos) {
 	glEnable(12288 + 2); //GL_CLIP_DISTANCE2
 	glEnable(12288 + 3); //GL_CLIP_DISTANCE3
 	
-	for(size_t z=0; z<db->cellsZ; z++) {
-		for(size_t y=0; y<db->cellsY; y++) {
-			for(size_t x=0; x<db->cellsX; x++) {
+	for(size_t z=0; z<db->gridSize[2]; z++) {
+		for(size_t y=0; y<db->gridSize[1]; y++) {
+			for(size_t x=0; x<db->gridSize[0]; x++) {
 				
 				for(size_t cellCubemap = 0; cellCubemap < cubemapsPerCell; cellCubemap++) {
-					Vector3 camPos = {
-						db->min[0] + cellSize.x * (x + randf()),
-						db->min[1] + cellSize.y * (y + randf()),
-						db->min[2] + cellSize.z * (z + randf()),
-					};
+					Vector3 camPos = Vector3Add(
+						db->min, 
+						Vector3Multiply(cellSize, (Vector3) {x + randf(), y + randf(), z + randf()})
+					);
 					
 					rlEnableShader(renderShader.id);
 					rlClearScreenBuffers();
@@ -424,7 +380,7 @@ size_t pvsCompute(PVSdb* db, Model* mdl, Vector3 camPos) {
 					cubemapsCount++;
 				}
 				
-				int percentage = cubemapsCount * 100 / (db->cellsX * db->cellsY * db->cellsZ * cubemapsPerCell);
+				int percentage = cubemapsCount * 100 / (db->gridSize[0] * db->gridSize[1] * db->gridSize[2] * cubemapsPerCell);
 				
 				if(prevPercentage != percentage) {
 					prevPercentage = percentage;
@@ -442,18 +398,8 @@ size_t pvsCompute(PVSdb* db, Model* mdl, Vector3 camPos) {
 	float raysComputeTime = (float) (clock() - start) / CLOCKS_PER_SEC;
 	printf("CUBEMAPS COMPUTE TIME %.2f sec\n", raysComputeTime);
 	
-	for(size_t z=0; z<db->cellsZ; z++) {
-		for(size_t y=0; y<db->cellsY; y++) {
-			for(size_t x=0; x<db->cellsX; x++) {
-				
-				PVSCell* cell = db->cellGrid + _getCellPtr(db, x, y, z);
-				uint32_t* tmpVis = tmpVisBuffer + _getCellPtr(db, x, y, z) * gpuData.dataPerCell;
-				
-				for(int i = 0; i < gpuData.dataPerCell; i++) {
-					cell->visMesh[i] |= tmpVis[i];
-				}
-			}
-		}
+	for(size_t i = 0; i < db->gridSize[0] * db->gridSize[1] * db->gridSize[2] * db->intsPerCell; i++) {
+		db->cells[i] = tmpVisBuffer[i];
 	}
 	
 	//just kiddin ;)
@@ -506,256 +452,32 @@ size_t pvsCompute(PVSdb* db, Model* mdl, Vector3 camPos) {
 	return cubemapsCount;
 }
 
-PVSResult pvsGetGridVisibility(PVSdb* db, float x, float y, float z) {
+inline int _clamp(int x, int min, int max) {
+	if(x < min) return min;
+	else if(x > max) return max;
+	else return x;
+}
+
+PVSResult pvsGetVisData(PVSdb* db, Vector3 camPos) {
 	PVSResult res = {};
 	
-	float tmp[3] = {x, y, z};
-	size_t cellPos[3] = {};
-	_getCellPos(db, tmp, cellPos);
+	Vector3 cellPos = Vector3Subtract(camPos, db->min);
+	cellPos = Vector3Multiply(cellPos, (Vector3) {db->gridSize[0], db->gridSize[1], db->gridSize[2]});
+	cellPos = Vector3Divide(cellPos, Vector3Subtract(db->max, db->min));
 	
-	res.meshesCount = db->meshes;
-	res.visMeshesCount = 0;
-	res.visible = db->cellGrid[cellPos[0] + cellPos[1] * db->cellsX + cellPos[2] * db->cellsX * db->cellsY].visMesh;
+	int cellPosX = _clamp((int) cellPos.x, 0, db->gridSize[0]);
+	int cellPosY = _clamp((int) cellPos.y, 0, db->gridSize[1]);
+	int cellPosZ = _clamp((int) cellPos.z, 0, db->gridSize[2]);
 	
-	for(size_t i=0; i<res.meshesCount; i++) {
-		res.visMeshesCount += (res.visible[i / 32] & (1 << (i % 32))) != 0;
+	res.meshCount = db->meshCount;
+	res.visMeshCount = 0;
+	res.visible = db->cells + (cellPosX + cellPosY * db->gridSize[0] + cellPosZ * db->gridSize[0] * db->gridSize[1]);
+	
+	for(size_t i=0; i<res.meshCount; i++) {
+		res.visMeshCount += (res.visible[i / 32] & (1 << (i % 32))) != 0;
 	}
 	
 	return res;
-}
-
-size_t _cellsVisMeshesCount(PVSdb* db, uint32_t* tmpVisMeshes, size_t visMeshesSize, size_t* min, size_t* max) {
-	
-	memset(tmpVisMeshes, 0, visMeshesSize * sizeof(uint32_t));
-	
-	for(size_t x=min[0]; x<max[0]; x++) {
-		for(size_t y=min[1]; y<max[1]; y++) {
-			for(size_t z=min[2]; z<max[2]; z++) {
-				
-				PVSCell* cell = db->cellGrid + (x + y * db->cellsX + z * db->cellsX * db->cellsY);
-				
-				for(size_t i=0; i<visMeshesSize; i++) {
-					tmpVisMeshes[i] |= cell->visMesh[i];
-				}
-				
-			}
-		}
-	}
-	
-	size_t visCount = 0;
-	
-	for(size_t i=0; i<visMeshesSize; i++) {
-		int cellVisible = tmpVisMeshes[i];
-		
-		for(int t=0; t<32; t++) visCount += (cellVisible >> t) & 1;
-	}
-	
-	return visCount;
-}
-
-double _cellsError(PVSdb* db, uint32_t* tmpVisMeshes, size_t visMeshesSize, size_t* min, size_t* max, bool useFacesArea) {
-	//Calculate error in cell min-max
-	
-	memset(tmpVisMeshes, 0, visMeshesSize * sizeof(uint32_t));
-	
-	for(size_t x=min[0]; x<max[0]; x++) {
-		for(size_t y=min[1]; y<max[1]; y++) {
-			for(size_t z=min[2]; z<max[2]; z++) {
-				
-				PVSCell* cell = db->cellGrid + (x + y * db->cellsX + z * db->cellsX * db->cellsY);
-				
-				for(size_t i=0; i<visMeshesSize; i++) {
-					tmpVisMeshes[i] |= cell->visMesh[i];
-				}
-				
-			}
-		}
-	}
-	
-	double error = 0;
-	
-	for(size_t x=min[0]; x<max[0]; x++) {
-		for(size_t y=min[1]; y<max[1]; y++) {
-			for(size_t z=min[2]; z<max[2]; z++) {
-				
-				PVSCell* cell = db->cellGrid + (x + y * db->cellsX + z * db->cellsX * db->cellsY);
-				
-				for(size_t i=0; i<db->meshes; i++) {
-					int meshError = (tmpVisMeshes[i / 32] ^ cell->visMesh[i / 32]) >> (i&31);
-					meshError &= 1;
-					
-					error += meshError * db->meshesData[i].facesArea * db->meshesData[i].faces;//(useFacesArea ? mdl->meshes[i].facesArea : mdl->meshes[i].facesCount);
-				}
-				//for(size_t i=0; i<visMeshesSize; i++) {
-				//	int cellError = tmpVisMeshes[i] ^ cell->visMesh[i];
-				//	
-				//	for(int t=0; t<8; t++) error += (cellError >> t) & 1;
-				//}
-				
-			}
-		}
-	}
-	
-	return error;
-}
-
-inline void _cellFindSplit(PVSdb* db, uint32_t* tmpVisMeshes, size_t visMeshesSize, PVSCell* cell, int* splitAxis, double* minSplitError, double* minMaxSplitError, size_t* splitPos, bool useFacesArea) {
-	//Find a axis aligned split plane
-	*splitAxis = -1;
-	*minSplitError = 0;
-	*minMaxSplitError = 0;
-	*splitPos = 0;
-	
-	for(int axis=0; axis<3; axis++) {
-		
-		size_t minPos = cell->min[axis];
-		size_t maxPos = cell->max[axis];
-		
-		for(size_t pos=minPos+1; pos<maxPos; pos++) {
-			
-			size_t splitMin[3] = {cell->min[0], cell->min[1], cell->min[2]};
-			size_t splitMax[3] = {cell->max[0], cell->max[1], cell->max[2]};
-			
-			splitMax[axis] = pos;
-			double err1 = _cellsError(db, tmpVisMeshes, visMeshesSize, splitMin, splitMax, useFacesArea);
-			
-			splitMin[axis] = pos;
-			splitMax[axis] = cell->max[axis];
-			double err2 = _cellsError(db, tmpVisMeshes, visMeshesSize, splitMin, splitMax, useFacesArea);
-			
-			if(*splitAxis == -1 || (err1 + err2) < *minSplitError) {
-				*splitAxis = axis;
-				*minSplitError = err1 + err2;
-				*minMaxSplitError = err1 > err2 ? err1 : err2;
-				*splitPos = pos;
-				
-				if(*minSplitError == 0) return;
-			}
-		}
-	}
-}
-
-cvector_vector_type(PVSCell) pvsJoinCells(PVSdb* db, size_t cellsCount, float minError, bool splitClever) {
-	
-	cvector_vector_type(PVSCell) cells = NULL;
-	
-	size_t visMeshesSize = (db->meshes / 32) + ((db->meshes % 32) > 0 ? 1 : 0);
-	uint32_t* tmpVisMeshes = malloc(visMeshesSize * sizeof(uint32_t));
-	assert(tmpVisMeshes);
-	
-	PVSCell firstCell = {0};
-	firstCell.max[0] = db->cellsX;
-	firstCell.max[1] = db->cellsY;
-	firstCell.max[2] = db->cellsZ;
-	firstCell.error = -1;
-	
-	cvector_push_back(cells, firstCell);
-	
-	bool useFacesArea = true;
-	
-	while(cvector_size(cells) < cellsCount) {
-		
-		//Find a cell with maximum total error
-		bool splitCellExist = false;
-		size_t splitCellId;
-		float splitCellError = 0;
-		
-		for(size_t i=0; i<cvector_size(cells); i++) {
-			PVSCell* cell = cells + i;
-			
-			//cell can't be split
-			//if(cell->min[0] == cell->max[0] + 1 && cell->min[1] == cell->max[1] + 1 && cell->min[2] + 1 == cell->max[2]) continue;
-			//error will be 0 anyway
-			
-			double err = cell->error;
-			if(err < 0) {
-				err = _cellsError(db, tmpVisMeshes, visMeshesSize, cell->min, cell->max, useFacesArea);
-				cell->error = err;
-			}
-			
-			if(err < splitCellError) continue;
-			if(err < minError) continue;
-			
-			//Find an axis aligned split plane
-			if(splitClever) {
-				int splitAxis = -1;
-				double minSplitError;
-				double minMaxSplitError;
-				size_t splitPos;
-				_cellFindSplit(db, tmpVisMeshes, visMeshesSize, cell, &splitAxis, &minSplitError, &minMaxSplitError, &splitPos, useFacesArea);
-				
-				if(minSplitError > err) printf("wtf\n");
-				
-				err = err - minMaxSplitError;
-			}
-			
-			if(err > splitCellError) {
-				splitCellExist = true;
-				splitCellId = i;
-				splitCellError = err;
-			}
-		}
-		
-		//There is no point in splitting more cells
-		if(!splitCellExist) break;
-		PVSCell* splitCell = cells + splitCellId;
-		
-		//Find a axis aligned split plane
-		int splitAxis = -1;
-		double minSplitError;
-		double minMaxSplitError;
-		size_t splitPos;
-		_cellFindSplit(db, tmpVisMeshes, visMeshesSize, splitCell, &splitAxis, &minSplitError, &minMaxSplitError, &splitPos, useFacesArea);
-		
-		//There is nothing to split (this shouldnt be possible?)
-		//if(splitAxis == -1) break;
-		
-		PVSCell cell2 = {0};
-		for(int axis=0; axis<3; axis++) {
-			cell2.min[axis] = splitCell->min[axis];
-			cell2.max[axis] = splitCell->max[axis];
-		}
-		//memcpy(cell2.min, splitCell->min, sizeof(float) * 3);
-		//memcpy(cell2.max, splitCell->max, sizeof(float) * 3);
-		
-		splitCell->max[splitAxis] = splitPos;
-		cell2.min[splitAxis] = splitPos;
-		
-		splitCell->error = -1;
-		cell2.error = -1;
-		
-		cvector_push_back(cells, cell2);
-		
-		if(_cellsVisMeshesCount(db, tmpVisMeshes, visMeshesSize, cell2.min, cell2.max) == 0) cvector_pop_back(cells);
-		if(_cellsVisMeshesCount(db, tmpVisMeshes, visMeshesSize, splitCell->min, splitCell->max) == 0) cvector_erase(cells, splitCellId);
-	}
-	
-	//Compute visibility for every cell
-	for(size_t i=0; i<cvector_size(cells); i++) {
-		PVSCell* cell = cells + i;
-		
-		cell->visMesh = calloc(visMeshesSize, sizeof(uint32_t));
-		assert(cell->visMesh);
-		
-		size_t* min = cell->min;
-		size_t* max = cell->max;
-		
-		for(size_t x=min[0]; x<max[0]; x++) {
-			for(size_t y=min[1]; y<max[1]; y++) {
-				for(size_t z=min[2]; z<max[2]; z++) {
-					
-					PVSCell* cell2 = db->cellGrid + (x + y * db->cellsX + z * db->cellsX * db->cellsY);
-					
-					for(size_t t=0; t<visMeshesSize; t++) {
-						cell->visMesh[t] |= cell2->visMesh[t];
-					}
-					
-				}
-			}
-		}
-	}
-	
-	return cells;
 }
 
 #endif
