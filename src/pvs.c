@@ -398,9 +398,11 @@ size_t pvsCompute(PVSdb* db, Model* mdl, Vector3 camPos) {
 	float raysComputeTime = (float) (clock() - start) / CLOCKS_PER_SEC;
 	printf("CUBEMAPS COMPUTE TIME %.2f sec\n", raysComputeTime);
 	
-	for(size_t i = 0; i < db->gridSize[0] * db->gridSize[1] * db->gridSize[2] * db->intsPerCell; i++) {
-		db->cells[i] = tmpVisBuffer[i];
-	}
+	memcpy(
+		db->cells, 
+		tmpVisBuffer, 
+		gpuData.dataPerCell * sizeof(uint32_t) * db->gridSize[0] * db->gridSize[1] * db->gridSize[2]
+	);
 	
 	//just kiddin ;)
 	rlDisableFramebuffer();
@@ -471,7 +473,7 @@ PVSResult pvsGetVisData(PVSdb* db, Vector3 camPos) {
 	
 	res.meshCount = db->meshCount;
 	res.visMeshCount = 0;
-	res.visible = db->cells + (cellPosX + cellPosY * db->gridSize[0] + cellPosZ * db->gridSize[0] * db->gridSize[1]);
+	res.visible = db->cells + (cellPosX + cellPosY * db->gridSize[0] + cellPosZ * db->gridSize[0] * db->gridSize[1]) * db->intsPerCell;
 	
 	for(size_t i=0; i<res.meshCount; i++) {
 		res.visMeshCount += (res.visible[i / 32] & (1 << (i % 32))) != 0;
