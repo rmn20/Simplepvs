@@ -66,7 +66,7 @@ PVSResult pvsGetVisData(PVSdb* db, Vector3 camPos);
 #include "rlgl.h"
 #include "raymath.h"
 
-inline size_t _getCellPtr(PVSdb* db, size_t x, size_t y, size_t z) {
+inline size_t _getCellIndex(PVSdb* db, size_t x, size_t y, size_t z) {
 	return x + y * db->gridSize[0] + z * db->gridSize[0] * db->gridSize[1];
 }
 
@@ -473,7 +473,7 @@ PVSResult pvsGetVisData(PVSdb* db, Vector3 camPos) {
 	
 	res.meshCount = db->meshCount;
 	res.visMeshCount = 0;
-	res.visible = db->cells + (cellPosX + cellPosY * db->gridSize[0] + cellPosZ * db->gridSize[0] * db->gridSize[1]) * db->intsPerCell;
+	res.visible = db->cells + _getCellIndex(db, cellPosX, cellPosY, cellPosZ) * db->intsPerCell;
 	
 	for(size_t i=0; i<res.meshCount; i++) {
 		res.visMeshCount += (res.visible[i / 32] & (1 << (i % 32))) != 0;
