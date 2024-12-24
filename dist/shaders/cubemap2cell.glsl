@@ -22,8 +22,19 @@ uniform sampler2D cubeIdxTex;
 uniform sampler2D cubeDepthTex;
 
 void main() {
-	uint viewId = gl_GlobalInvocationID.z;
 	int texSize = textureSize(cubeIdxTex, 0).y / 2;
+	/*{
+		int hits = 0;
+		
+		if(texelFetch(cubeDepthTex, ivec2(texSize * 0.5, texSize * 0.5), 0).r < 1.0) hits++;
+		if(texelFetch(cubeDepthTex, ivec2(texSize * 1.5, texSize * 0.5), 0).r < 1.0) hits++;
+		if(texelFetch(cubeDepthTex, ivec2(texSize * 0.5, texSize * 1.5), 0).r < 1.0) hits++;
+		if(texelFetch(cubeDepthTex, ivec2(texSize * 1.5, texSize * 1.5), 0).r < 1.0) hits++;
+		if(texelFetch(cubeDepthTex, ivec2(texSize * 2.5, texSize * 1.5), 0).r < 1.0) hits++;
+		
+		if(hits < 5) return;
+	}*/
+	uint viewId = gl_GlobalInvocationID.z;
 	
 	ivec2 texelPos = ivec2(gl_GlobalInvocationID.xy) + ivec2((viewId % 3) * texSize, viewId / 3 * texSize);
 	
@@ -40,7 +51,7 @@ void main() {
 	vec4 rayStart = viewPos * invMat;
 	rayStart.xyz /= rayStart.w;
 	
-	viewPos.z = texelFetch(cubeDepthTex, texelPos, 0).r * 2.0f - 1.0f;
+	viewPos.z = texelFetch(cubeDepthTex, texelPos, 0).r * 2.0 - 1.0;
 	vec4 rayEnd = viewPos * invMat;
 	rayEnd.xyz /= rayEnd.w;
 	
