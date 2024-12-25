@@ -24,19 +24,22 @@ uniform sampler2D cubeIdxTex;
 uniform sampler2D cubeDepthTex;
 
 void main() {
+	uint viewId = gl_GlobalInvocationID.z;
+	uint cubemapId = gl_GlobalInvocationID.z / 6;
+	
 	int texSize = textureSize(cubeIdxTex, 0).x / 6;
+	
 	/*{
 		int hits = 0;
 		
-		if(texelFetch(cubeDepthTex, ivec2(texSize * 0.5, texSize * 0.5), 0).r < 1.0) hits++;
-		if(texelFetch(cubeDepthTex, ivec2(texSize * 1.5, texSize * 0.5), 0).r < 1.0) hits++;
-		if(texelFetch(cubeDepthTex, ivec2(texSize * 0.5, texSize * 1.5), 0).r < 1.0) hits++;
-		if(texelFetch(cubeDepthTex, ivec2(texSize * 1.5, texSize * 1.5), 0).r < 1.0) hits++;
-		if(texelFetch(cubeDepthTex, ivec2(texSize * 2.5, texSize * 1.5), 0).r < 1.0) hits++;
+		if(texelFetch(cubeDepthTex, ivec2(texSize * (0 + 0.5), texSize * (cubemapId + 0.5)), 0).r < 1.0) hits++;
+		if(texelFetch(cubeDepthTex, ivec2(texSize * (1 + 0.5), texSize * (cubemapId + 0.5)), 0).r < 1.0) hits++;
+		if(texelFetch(cubeDepthTex, ivec2(texSize * (3 + 0.5), texSize * (cubemapId + 0.5)), 0).r < 1.0) hits++;
+		if(texelFetch(cubeDepthTex, ivec2(texSize * (4 + 0.5), texSize * (cubemapId + 0.5)), 0).r < 1.0) hits++;
+		if(texelFetch(cubeDepthTex, ivec2(texSize * (5 + 0.5), texSize * (cubemapId + 0.5)), 0).r < 1.0) hits++;
 		
 		if(hits < 5) return;
 	}*/
-	uint viewId = gl_GlobalInvocationID.z;
 	
 	ivec2 texelPos = ivec2(gl_GlobalInvocationID.xy) + ivec2((viewId % 6) * texSize, (viewId / 6) * texSize);
 	
