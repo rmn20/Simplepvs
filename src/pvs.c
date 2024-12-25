@@ -46,7 +46,7 @@ void pvsUnloadModelData(PVSModelData* mdlData);
 void pvsInitDB(PVSdb* db, PVSModelData* mdlData, float cellSize);
 void pvsUnloadDB(PVSdb* db);
 
-size_t pvsCompute(PVSdb* db, Model* mdl, Vector3 camPos);
+size_t pvsCompute(PVSdb* db, PVSModelData* mdlData, Model* mdl, Vector3 camPos);
 PVSResult pvsGetVisData(PVSdb* db, Vector3 camPos);
 
 #endif
@@ -159,6 +159,64 @@ void pvsUnloadDB(PVSdb* db) {
 	free(db->cells);
 }
 
+//hopefully this works faster than a real frustum culling
+bool inline _isAABBVisible(Vector3* camPos, int lookAxis, Vector3* aabbMin, Vector3* aabbMax) {
+	if(camPos->x >= aabbMin->x && camPos->x <= aabbMax->x &&
+		camPos->y >= aabbMin->y && camPos->y <= aabbMax->y &&
+		camPos->z >= aabbMin->z && camPos->z <= aabbMax->z) {
+		return true;
+	}
+	
+	//Transform aabb into local coordinate system
+	Vector3 aabbMinT, aabbMaxT, camPosT;
+	
+	if(lookAxis <= 1) {
+		//X direction
+		aabbMinT = (Vector3) {aabbMin->y, aabbMin->z, aabbMin->x};
+		aabbMaxT = (Vector3) {aabbMax->y, aabbMax->z, aabbMax->x};
+		
+		camPosT = (Vector3) {camPos->y, camPos->z, camPos->x};
+	} else if(lookAxis <= 3) {
+		//Y direction
+		aabbMinT = (Vector3) {aabbMin->x, aabbMin->z, aabbMin->y};
+		aabbMaxT = (Vector3) {aabbMax->x, aabbMax->z, aabbMax->y};
+		
+		camPosT = (Vector3) {camPos->x, camPos->z, camPos->y};
+	} else {
+		//Z direction
+		aabbMinT = (Vector3) {aabbMin->x, aabbMin->y, aabbMin->z};
+		aabbMaxT = (Vector3) {aabbMax->x, aabbMax->y, aabbMax->z};
+		
+		camPosT = (Vector3) {camPos->x, camPos->y, camPos->z};
+	}
+		
+	aabbMinT = Vector3Subtract(aabbMinT, camPosT);
+	aabbMaxT = Vector3Subtract(aabbMaxT, camPosT);
+	
+	float distance;
+	
+	if((lookAxis & 1) == 0) {
+		//Looking in positive direction
+		//pick furthest aabb side since frustum is becoming larger in the distance
+		distance = aabbMaxT.z;
+	} else {
+		//Looking in negative direction
+		distance = -aabbMinT.z;
+	}
+	
+	if(distance < RL_CULL_DISTANCE_NEAR) return false;
+	
+	//Viewport physical size
+	const float tan45 = sin(90.0 / 2.0) / cos(90.0 / 2.0);
+	float viewSize = tan45 * distance;
+	
+	//Check if aabb is inside frustum
+	if(aabbMaxT.x < -viewSize || aabbMinT.x > viewSize) return false;
+	if(aabbMaxT.y < -viewSize || aabbMinT.y > viewSize) return false;
+	
+	return true;
+}
+
 inline float randf() {
 	return (float) rand() / RAND_MAX;
 }
@@ -175,11 +233,11 @@ typedef struct GpuData {
 	uint32_t dataPerCell;
 } GpuData;
 
-size_t pvsCompute(PVSdb* db, Model* mdl, Vector3 camPos) {
+size_t pvsCompute(PVSdb* db, PVSModelData* mdlData, Model* mdl, Vector3 camPos) {
 	srand(time(NULL));
 	
 	//Create render target
-	int size = 128; //should be multiple of 8
+	int size = 256; //should be multiple of 8
 	RenderTexture2D target = {0};
 
 	target.id = rlLoadFramebuffer(size * 3, size * 2); // Load an empty framebuffer
@@ -216,6 +274,7 @@ size_t pvsCompute(PVSdb* db, Model* mdl, Vector3 camPos) {
 	//Load material and shader
 	Shader renderShader = LoadShader("shaders/cubemap-render.vs", "shaders/cubemap-render.fs");
 	int meshIdUniform = GetShaderLocation(renderShader, "meshId");
+	int viewIdUniform = GetShaderLocation(renderShader, "viewId");
 	
 	Material mat = LoadMaterialDefault();
 	mat.shader = renderShader;
@@ -369,8 +428,15 @@ size_t pvsCompute(PVSdb* db, Model* mdl, Vector3 camPos) {
 							if(mesh->indices != NULL) rlEnableVertexBufferElement(mesh->vboId[6]);
 						}
 						
-						if(mesh->indices != NULL) rlDrawVertexArrayElementsInstanced(0, mesh->triangleCount * 3, 0, 6);
-						else rlDrawVertexArrayInstanced(0, mesh->vertexCount, 6);
+						PVSMeshData* meshData = &mdlData->meshData[i];
+						
+						for(int viewport = 0; viewport < 6; viewport++) {
+							if(!_isAABBVisible(&camPos, viewport, &meshData->min, &meshData->max)) continue;
+							rlSetUniform(viewIdUniform, &viewport, RL_SHADER_UNIFORM_INT, 1);
+							
+							if(mesh->indices != NULL) rlDrawVertexArrayElements(0, mesh->triangleCount * 3, 0);
+							else rlDrawVertexArray(0, mesh->vertexCount);
+						}
 					}
 					
 					//Process cubemap results
