@@ -278,7 +278,8 @@ size_t pvsCompute(PVSdb* db, PVSModelData* mdlData, Model* mdl, Vector3 camPos) 
 	
 	//Load material and shader
 	Shader renderShader = LoadShader("shaders/cubemap-render.vs", "shaders/cubemap-render.fs");
-	int meshIdUniform = GetShaderLocation(renderShader, "meshId");
+	int meshIdUniform = GetShaderLocation(renderShader, "meshId");;
+	int viewIdUniform = GetShaderLocation(renderShader, "viewId");;
 	
 	Material mat = LoadMaterialDefault();
 	mat.shader = renderShader;
@@ -321,11 +322,8 @@ size_t pvsCompute(PVSdb* db, PVSModelData* mdlData, Model* mdl, Vector3 camPos) 
 		gpuData.dataPerCell * sizeof(uint32_t) * db->gridSize[0] * db->gridSize[1] * db->gridSize[2]
 	);
 	
-	uint32_t* instanceData = malloc(6 * cubemapsPerCell * sizeof(uint32_t));
-	
 	unsigned int sbGrid = rlLoadShaderBuffer(visBufferSize * sizeof(uint32_t), tmpVisBuffer, RL_DYNAMIC_COPY);
 	unsigned int sbData = rlLoadShaderBuffer(sizeof(GpuData), &gpuData, RL_DYNAMIC_COPY);
-	unsigned int sbInstances = rlLoadShaderBuffer(6 * cubemapsPerCell * sizeof(uint32_t), instanceData, RL_DYNAMIC_COPY);
 	
 	//Setup compute shader data
 	rlEnableShader(cellVisProgram);
@@ -344,7 +342,6 @@ size_t pvsCompute(PVSdb* db, PVSModelData* mdlData, Model* mdl, Vector3 camPos) 
 	rlEnableShader(renderShader.id);
 	
 	rlBindShaderBuffer(sbData, 2);
-	rlBindShaderBuffer(sbInstances, 3);
 					
 	rlSetVertexAttribute(renderShader.locs[SHADER_LOC_VERTEX_POSITION], 3, RL_FLOAT, 0, 0, 0);
 	rlEnableVertexAttribute(renderShader.locs[SHADER_LOC_VERTEX_POSITION]);
@@ -429,8 +426,19 @@ size_t pvsCompute(PVSdb* db, PVSModelData* mdlData, Model* mdl, Vector3 camPos) 
 				rlClearScreenBuffers();
 				
 				for(int i=0; i<mdl->meshCount; i++) {
+					int meshId = i + 1;
+					rlSetUniform(meshIdUniform, &meshId, RL_SHADER_UNIFORM_INT, 1);
+					
+					Mesh* mesh = &mdl->meshes[i];
+					
+					if(!rlEnableVertexArray(mesh->vaoId)) {
+						// Bind mesh VBO data: vertex position (shader-location = 0)
+						rlEnableVertexBuffer(mesh->vboId[0]);
+
+						if(mesh->indices != NULL) rlEnableVertexBufferElement(mesh->vboId[6]);
+					}
+					
 					PVSMeshData* meshData = &mdlData->meshData[i];
-					int visInstsCount = 0;
 					
 					for(size_t cellCubemap = 0; cellCubemap < cubemapsPerCell; cellCubemap++) {
 						Vector3* camPos = &viewCamPos[cellCubemap];
@@ -438,27 +446,12 @@ size_t pvsCompute(PVSdb* db, PVSModelData* mdlData, Model* mdl, Vector3 camPos) 
 						for(int viewport = 0; viewport < 6; viewport++) {
 							if(!_isAABBVisible(camPos, viewport, &meshData->min, &meshData->max)) continue;
 							
-							instanceData[visInstsCount] = cellCubemap * 6 + viewport;
-							visInstsCount++;
+							int viewId = cellCubemap * 6 + viewport;
+							rlSetUniform(viewIdUniform, &viewId, RL_SHADER_UNIFORM_INT, 1);
+							
+							if(mesh->indices != NULL) rlDrawVertexArrayElements(0, mesh->triangleCount * 3, 0);
+							else rlDrawVertexArray(0, mesh->vertexCount);
 						}
-					}
-					
-					if(visInstsCount > 0) {
-						int meshId = i + 1;
-						rlSetUniform(meshIdUniform, &meshId, RL_SHADER_UNIFORM_INT, 1);
-						rlUpdateShaderBuffer(sbInstances, instanceData, sizeof(uint32_t) * visInstsCount, 0);
-						
-						Mesh* mesh = &mdl->meshes[i];
-						
-						if(!rlEnableVertexArray(mesh->vaoId)) {
-							// Bind mesh VBO data: vertex position (shader-location = 0)
-							rlEnableVertexBuffer(mesh->vboId[0]);
-
-							if(mesh->indices != NULL) rlEnableVertexBufferElement(mesh->vboId[6]);
-						}
-						
-						if(mesh->indices != NULL) rlDrawVertexArrayElementsInstanced(0, mesh->triangleCount * 3, 0, visInstsCount);
-						else rlDrawVertexArrayInstanced(0, mesh->vertexCount, visInstsCount);
 					}
 				}
 				
@@ -503,10 +496,8 @@ size_t pvsCompute(PVSdb* db, PVSModelData* mdlData, Model* mdl, Vector3 camPos) 
 	rlUnloadShaderProgram(cellVisProgram);
 	rlUnloadShaderBuffer(sbGrid);
 	rlUnloadShaderBuffer(sbData);
-	rlUnloadShaderBuffer(sbInstances);
 	
 	free(tmpVisBuffer);
-	free(instanceData);
 	free(viewCamPos);
 	
 	rlViewport(0, 0, GetRenderWidth(), GetRenderHeight());

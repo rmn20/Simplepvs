@@ -1,4 +1,6 @@
 #version 430
+// Input uniform values
+uniform int viewId;
 
 // Input vertex attributes
 in vec3 vertexPosition;
@@ -22,8 +24,6 @@ layout(std430, binding = 3) readonly restrict buffer instanceData {
 };
 
 void main() {
-	uint viewId = instanceViewId[gl_InstanceID];
-	
     // Calculate final vertex position
 	vec4 pos = vec4(vertexPosition, 1.0) * views[viewId].mat;
 	
