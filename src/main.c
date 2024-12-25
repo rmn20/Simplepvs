@@ -64,6 +64,7 @@ int main(void) {
 	bool lockPVS = false;
 	bool useCellData = false;
 	bool hideWorld = false;
+	bool showGrid = false;
 	
 	PVSModelData pvsMdlData = {0};
 	PVSdb pvsDB = {0};
@@ -143,10 +144,11 @@ int main(void) {
 		if(IsKeyPressed(KEY_L)) lockPVS = !lockPVS;
 		if(IsKeyPressed(KEY_P)) usePVS = !usePVS;
 		if(IsKeyPressed(KEY_H)) hideWorld = !hideWorld;
+		if(IsKeyPressed(KEY_G)) showGrid = !showGrid;
 		
 		if(IsKeyPressed(KEY_X)) {
 			clock_t start = clock();
-			totalRays += pvsCompute(&pvsDB, &mdl, camPos);
+			totalRays += pvsCompute(&pvsDB, &pvsMdlData, &mdl, camPos);
 			//totalRays += pvsCompute(&pvsDB, pvsMdl, 6.54f, 8, dpos, dhit);
 			//totalRays += pvsCompute(&pvsDB, pvsMdl, 48, 99999, dpos, dhit);
 			//totalRays += pvsCompute(&pvsDB, pvsMdl, 48, 8, dpos, dhit);
@@ -271,6 +273,31 @@ int main(void) {
 		
 		rlSetLineWidth(1);
 		
+		if(showGrid) for(size_t x = 0; x < pvsDB.gridSize[0]; x++) {
+			for(size_t y = 0; y < pvsDB.gridSize[1]; y++) {
+				for(size_t z = 0; z < pvsDB.gridSize[2]; z++) {
+					Vector3 gridSize = (Vector3) {pvsDB.gridSize[0], pvsDB.gridSize[1], pvsDB.gridSize[2]};
+					
+					Color col = (Color) {x * 255 / (gridSize.x - 1), 0, z * 255 / (gridSize.z - 1), 255};
+					
+					Vector3 dbSize = Vector3Subtract(pvsDB.max, pvsDB.min);
+					Vector3 dbPos = pvsDB.min;
+					
+					Vector3 min = Vector3Multiply((Vector3) {x, y, z}, dbSize);
+					min = Vector3Divide(min, gridSize);
+					min = Vector3Add(min, dbPos);
+					
+					Vector3 max = Vector3Add(min, Vector3Divide(dbSize, gridSize));
+					
+					DrawCubeWires(
+						Vector3Scale(Vector3Add(min, max), 0.5),
+						max.x - min.x - 0.5, max.y - min.y - 0.5, max.z - min.z - 0.5,
+						col
+					);
+				}
+			}
+		}
+		
 		DrawLine3D(
 			(Vector3) {dpos[0], dpos[1], dpos[2]},
 			(Vector3) {dhit[0], dhit[1], dhit[2]},
@@ -299,8 +326,8 @@ int main(void) {
 			DrawText(TextFormat("Visible meshes: %ld", pvsRes.visMeshCount), 0, fnt.baseSize * line * 2, fnt.baseSize * 2, BLACK); line++;
 			line++;
 			
-			DrawText(TextFormat("PVS calc (X) time: %.2f sec", raysComputeTime), 0, fnt.baseSize * line * 2, fnt.baseSize * 2, BLACK); line++;
-			DrawText(TextFormat("Total cubemaps: %ld (%d per sec)", totalRays, (int) (totalRays / raysComputeTime)), 0, fnt.baseSize * line * 2, fnt.baseSize * 2, BLACK); line++;
+			//DrawText(TextFormat("PVS calc (X) time: %.2f sec", raysComputeTime), 0, fnt.baseSize * line * 2, fnt.baseSize * 2, BLACK); line++;
+			//DrawText(TextFormat("Total cubemaps: %ld (%d per sec)", totalRays, (int) (totalRays / raysComputeTime)), 0, fnt.baseSize * line * 2, fnt.baseSize * 2, BLACK); line++;
 			line++;
 			
 			DrawText(TextFormat("(H)ide world: %s", hideWorld ? "on" : "off"), 0, fnt.baseSize * line * 2, fnt.baseSize * 2, BLACK); line++;

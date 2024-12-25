@@ -6,23 +6,25 @@ layout(std430, binding = 1) restrict buffer gridData {
     uint cellGrid[];
 };
 
-layout(std430, binding = 2) restrict buffer commonData {
-    mat4 matVP[6];
-    mat4 matVPInv[6];
+struct Viewport {
+	mat4 mat;
+	mat4 invMat;
+};
+
+layout(std430, binding = 2) readonly restrict buffer commonData {
+	Viewport views[64 * 6];
 	
-	uvec4 gridSize;
+    uvec4 gridSize;
 	vec4 aabbMin;
 	vec4 aabbMax;
-	/*uvec4 outAABB[6];
-	uvec4 camPos;*/
-	uint dataPerCell;
+	uvec2 dataPerCell; //datapercell, cubemapsinimage
 };
 
 uniform sampler2D cubeIdxTex;
 uniform sampler2D cubeDepthTex;
 
 void main() {
-	int texSize = textureSize(cubeIdxTex, 0).y / 2;
+	int texSize = textureSize(cubeIdxTex, 0).x / 6;
 	/*{
 		int hits = 0;
 		
@@ -36,14 +38,14 @@ void main() {
 	}*/
 	uint viewId = gl_GlobalInvocationID.z;
 	
-	ivec2 texelPos = ivec2(gl_GlobalInvocationID.xy) + ivec2((viewId % 3) * texSize, viewId / 3 * texSize);
+	ivec2 texelPos = ivec2(gl_GlobalInvocationID.xy) + ivec2((viewId % 6) * texSize, (viewId / 6) * texSize);
 	
 	uint meshId = uint(texelFetch(cubeIdxTex, texelPos, 0).r);
 	if(meshId == 0) return;
 	meshId--;
 	
 	//Calculate ray data
-	mat4 invMat = matVPInv[viewId];
+	mat4 invMat = views[viewId].invMat;
 	
 	vec4 viewPos = vec4(float(gl_GlobalInvocationID.x), float(gl_GlobalInvocationID.y), 0.0, 1.0);
 	viewPos.xy = viewPos.xy / float(texSize) * 2.0 - 1.0;
@@ -82,7 +84,7 @@ void main() {
 	while(t <= rayScaledLen) {
 		//Update cell visibility
 		if(greaterThanEqual(mapPos, ivec3(0)) == bvec3(true) && lessThan(mapPos, ivec3(gridSize.xyz)) == bvec3(true)) {
-			uint cellPtr = (mapPos.x + mapPos.y * gridSize.x + mapPos.z * gridSize.x * gridSize.y) * dataPerCell;
+			uint cellPtr = (mapPos.x + mapPos.y * gridSize.x + mapPos.z * gridSize.x * gridSize.y) * dataPerCell.x;
 			atomicOr(cellGrid[cellPtr + (meshId >> 5)], 1 << (meshId & 31));
 		}
 		

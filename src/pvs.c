@@ -61,6 +61,8 @@ PVSResult pvsGetVisData(PVSdb* db, Vector3 camPos);
 #include <stdio.h>
 #include <limits.h>
 
+#include "glad.h"
+
 #include "cvector.h"
 
 #include "rlgl.h"
@@ -221,9 +223,10 @@ inline float randf() {
 	return (float) rand() / RAND_MAX;
 }
 
+#define MAX_CUBEMAPS_PER_CELL 64
+
 typedef struct GpuData {
-    float matVP[16 * 6];
-    float matVPInv[16 * 6];
+    Matrix mats[6 * 2 * MAX_CUBEMAPS_PER_CELL];
 	
 	uint32_t gridSize[4];
 	float aabbMin[4];
@@ -231,6 +234,7 @@ typedef struct GpuData {
 	/*uint32_t outAABB[4 * 6];
 	uint32_t camPos[4];*/
 	uint32_t dataPerCell;
+	uint32_t cubemapsInImage;
 } GpuData;
 
 size_t pvsCompute(PVSdb* db, PVSModelData* mdlData, Model* mdl, Vector3 camPos) {
@@ -238,25 +242,26 @@ size_t pvsCompute(PVSdb* db, PVSModelData* mdlData, Model* mdl, Vector3 camPos) 
 	
 	//Create render target
 	int size = 256; //should be multiple of 8
+	size_t cubemapsPerCell = 8;
 	RenderTexture2D target = {0};
 
-	target.id = rlLoadFramebuffer(size * 3, size * 2); // Load an empty framebuffer
+	target.id = rlLoadFramebuffer(size * 6, size * cubemapsPerCell); // Load an empty framebuffer
 	assert(target.id > 0);
 	rlEnableFramebuffer(target.id);
 	
 	//Create render textures
-	target.texture.id = rlLoadTexture(NULL, size * 3, size * 2, RL_PIXELFORMAT_UNCOMPRESSED_R16, 1);
-	target.texture.width = size * 3;
-	target.texture.height = size * 2;
+	target.texture.id = rlLoadTexture(NULL, size * 6, size * cubemapsPerCell, RL_PIXELFORMAT_UNCOMPRESSED_R16, 1);
+	target.texture.width = size * 6;
+	target.texture.height = size * cubemapsPerCell;
 	target.texture.format = RL_PIXELFORMAT_UNCOMPRESSED_R16;
 	target.texture.mipmaps = 1;
 	
 	rlTextureParameters(target.texture.id, RL_TEXTURE_MIN_FILTER, RL_TEXTURE_FILTER_NEAREST);
 	rlTextureParameters(target.texture.id, RL_TEXTURE_MAG_FILTER, RL_TEXTURE_FILTER_NEAREST);
 	
-	target.depth.id = rlLoadTextureDepth(size * 3, size * 2, false);
-	target.depth.width = size * 3;
-	target.depth.height = size * 2;
+	target.depth.id = rlLoadTextureDepth(size * 6, size * cubemapsPerCell, false);
+	target.depth.width = size * 6;
+	target.depth.height = size * cubemapsPerCell;
 	target.depth.format = 19; //DEPTH_COMPONENT_24BIT?
 	target.depth.mipmaps = 1;
 	
@@ -274,7 +279,6 @@ size_t pvsCompute(PVSdb* db, PVSModelData* mdlData, Model* mdl, Vector3 camPos) 
 	//Load material and shader
 	Shader renderShader = LoadShader("shaders/cubemap-render.vs", "shaders/cubemap-render.fs");
 	int meshIdUniform = GetShaderLocation(renderShader, "meshId");
-	int viewIdUniform = GetShaderLocation(renderShader, "viewId");
 	
 	Material mat = LoadMaterialDefault();
 	mat.shader = renderShader;
@@ -305,6 +309,7 @@ size_t pvsCompute(PVSdb* db, PVSModelData* mdlData, Model* mdl, Vector3 camPos) 
 	gpuData.camPos[2] = (camPos.z - db->min[2]) * db->cellsZ / (db->max[2] - db->min[2]);*/
 	
 	gpuData.dataPerCell = db->intsPerCell;
+	gpuData.cubemapsInImage = cubemapsPerCell;
 	
 	size_t visBufferSize = db->gridSize[0] * db->gridSize[1] * db->gridSize[2] * gpuData.dataPerCell;
 	uint32_t* tmpVisBuffer = malloc(visBufferSize * sizeof(uint32_t));
@@ -316,8 +321,11 @@ size_t pvsCompute(PVSdb* db, PVSModelData* mdlData, Model* mdl, Vector3 camPos) 
 		gpuData.dataPerCell * sizeof(uint32_t) * db->gridSize[0] * db->gridSize[1] * db->gridSize[2]
 	);
 	
+	uint32_t* instanceData = malloc(6 * cubemapsPerCell * sizeof(uint32_t));
+	
 	unsigned int sbGrid = rlLoadShaderBuffer(visBufferSize * sizeof(uint32_t), tmpVisBuffer, RL_DYNAMIC_COPY);
 	unsigned int sbData = rlLoadShaderBuffer(sizeof(GpuData), &gpuData, RL_DYNAMIC_COPY);
+	unsigned int sbInstances = rlLoadShaderBuffer(6 * cubemapsPerCell * sizeof(uint32_t), instanceData, RL_DYNAMIC_COPY);
 	
 	//Setup compute shader data
 	rlEnableShader(cellVisProgram);
@@ -336,6 +344,7 @@ size_t pvsCompute(PVSdb* db, PVSModelData* mdlData, Model* mdl, Vector3 camPos) 
 	rlEnableShader(renderShader.id);
 	
 	rlBindShaderBuffer(sbData, 2);
+	rlBindShaderBuffer(sbInstances, 3);
 					
 	rlSetVertexAttribute(renderShader.locs[SHADER_LOC_VERTEX_POSITION], 3, RL_FLOAT, 0, 0, 0);
 	rlEnableVertexAttribute(renderShader.locs[SHADER_LOC_VERTEX_POSITION]);
@@ -344,7 +353,6 @@ size_t pvsCompute(PVSdb* db, PVSModelData* mdlData, Model* mdl, Vector3 camPos) 
 	
 	//Setup render
 	size_t cubemapsCount = 0;
-	size_t cubemapsPerCell = 8;
 	
 	rlDisableColorBlend();
 	rlDisableBackfaceCulling();
@@ -376,12 +384,14 @@ size_t pvsCompute(PVSdb* db, PVSModelData* mdlData, Model* mdl, Vector3 camPos) 
 	rlMatrixMode(RL_MODELVIEW);     // Switch back to modelview matrix
 	
 	rlEnableFramebuffer(target.id);
-	rlViewport(0, 0, size * 3, size * 2);
+	rlViewport(0, 0, size * 6, size * cubemapsPerCell);
 	
 	glEnable(12288); //GL_CLIP_DISTANCE0
 	glEnable(12288 + 1); //GL_CLIP_DISTANCE1
 	glEnable(12288 + 2); //GL_CLIP_DISTANCE2
 	glEnable(12288 + 3); //GL_CLIP_DISTANCE3
+	
+	Vector3* viewCamPos = malloc(cubemapsPerCell * sizeof(Vector3));
 	
 	for(size_t z=0; z<db->gridSize[2]; z++) {
 		for(size_t y=0; y<db->gridSize[1]; y++) {
@@ -393,8 +403,7 @@ size_t pvsCompute(PVSdb* db, PVSModelData* mdlData, Model* mdl, Vector3 camPos) 
 						Vector3Multiply(cellSize, (Vector3) {x + randf(), y + randf(), z + randf()})
 					);
 					
-					rlEnableShader(renderShader.id);
-					rlClearScreenBuffers();
+					viewCamPos[cellCubemap] = camPos;
 					
 					for(int viewport = 0; viewport < 6; viewport++) {
 						Vector3 target = (Vector3) {(viewport >> 1) == 0, (viewport >> 1) == 1, (viewport >> 1) == 2};
@@ -406,18 +415,38 @@ size_t pvsCompute(PVSdb* db, PVSModelData* mdlData, Model* mdl, Vector3 camPos) 
 						//Setup Camera view
 						Matrix matView = MatrixLookAt(camPos, target, upVec);
 						
-						Matrix* vpMat = (Matrix*) (gpuData.matVP + viewport * 16);
-						Matrix* vpMatInv = (Matrix*) (gpuData.matVPInv + viewport * 16);
+						Matrix* vpMat = &gpuData.mats[(viewport + cellCubemap * 6) * 2];
+						Matrix* vpMatInv = &gpuData.mats[(viewport + cellCubemap * 6) * 2 + 1];
 						
 						*vpMat = MatrixMultiply(matView, matProj);
 						*vpMatInv = MatrixInvert(*vpMat);
 					}
+				}
 					
-					rlUpdateShaderBuffer(sbData, &gpuData, sizeof(Matrix) * 6 * 2, 0);
+				rlUpdateShaderBuffer(sbData, gpuData.mats, sizeof(Matrix) * 6 * 2 * cubemapsPerCell, 0);
+				
+				rlEnableShader(renderShader.id);
+				rlClearScreenBuffers();
+				
+				for(int i=0; i<mdl->meshCount; i++) {
+					PVSMeshData* meshData = &mdlData->meshData[i];
+					int visInstsCount = 0;
 					
-					for(int i=0; i<mdl->meshCount; i++) {
+					for(size_t cellCubemap = 0; cellCubemap < cubemapsPerCell; cellCubemap++) {
+						Vector3* camPos = &viewCamPos[cellCubemap];
+						
+						for(int viewport = 0; viewport < 6; viewport++) {
+							if(!_isAABBVisible(camPos, viewport, &meshData->min, &meshData->max)) continue;
+							
+							instanceData[visInstsCount] = cellCubemap * 6 + viewport;
+							visInstsCount++;
+						}
+					}
+					
+					if(visInstsCount > 0) {
 						int meshId = i + 1;
 						rlSetUniform(meshIdUniform, &meshId, RL_SHADER_UNIFORM_INT, 1);
+						rlUpdateShaderBuffer(sbInstances, instanceData, sizeof(uint32_t) * visInstsCount, 0);
 						
 						Mesh* mesh = &mdl->meshes[i];
 						
@@ -428,23 +457,16 @@ size_t pvsCompute(PVSdb* db, PVSModelData* mdlData, Model* mdl, Vector3 camPos) 
 							if(mesh->indices != NULL) rlEnableVertexBufferElement(mesh->vboId[6]);
 						}
 						
-						PVSMeshData* meshData = &mdlData->meshData[i];
-						
-						for(int viewport = 0; viewport < 6; viewport++) {
-							if(!_isAABBVisible(&camPos, viewport, &meshData->min, &meshData->max)) continue;
-							rlSetUniform(viewIdUniform, &viewport, RL_SHADER_UNIFORM_INT, 1);
-							
-							if(mesh->indices != NULL) rlDrawVertexArrayElements(0, mesh->triangleCount * 3, 0);
-							else rlDrawVertexArray(0, mesh->vertexCount);
-						}
+						if(mesh->indices != NULL) rlDrawVertexArrayElementsInstanced(0, mesh->triangleCount * 3, 0, visInstsCount);
+						else rlDrawVertexArrayInstanced(0, mesh->vertexCount, visInstsCount);
 					}
-					
-					//Process cubemap results
-					rlEnableShader(cellVisProgram);
-					rlComputeShaderDispatch(size / 8, size / 8, 6);
-					
-					cubemapsCount++;
 				}
+				
+				//Process cubemap results
+				rlEnableShader(cellVisProgram);
+				rlComputeShaderDispatch(size / 8, size / 8, 6 * cubemapsPerCell);
+				
+				cubemapsCount += cubemapsPerCell;
 				
 				int percentage = cubemapsCount * 100 / (db->gridSize[0] * db->gridSize[1] * db->gridSize[2] * cubemapsPerCell);
 				
@@ -481,7 +503,11 @@ size_t pvsCompute(PVSdb* db, PVSModelData* mdlData, Model* mdl, Vector3 camPos) 
 	rlUnloadShaderProgram(cellVisProgram);
 	rlUnloadShaderBuffer(sbGrid);
 	rlUnloadShaderBuffer(sbData);
+	rlUnloadShaderBuffer(sbInstances);
+	
 	free(tmpVisBuffer);
+	free(instanceData);
+	free(viewCamPos);
 	
 	rlViewport(0, 0, GetRenderWidth(), GetRenderHeight());
 	rlEnableColorBlend();
